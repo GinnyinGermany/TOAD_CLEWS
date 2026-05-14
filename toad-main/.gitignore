@@ -1,0 +1,24 @@
+.vscode/
+*.egg-info/
+build/
+__pycache__/
+**/dask-worker-space/
+**/.ipynb_checkpoints/
+data/
+docs/source/generated/*
+docs/build.log
+docs/source/tutorials
+nohup.out
+*venv*
+
+# Coverage reports from pytest-cov 
+.coverage
+
+# Test artifacts (plots, etc.)
+test_artifacts/
+
+# Include this once we have a published release to fetch test data
+# tutorials/test_data
+
+*playground*
+/.claude

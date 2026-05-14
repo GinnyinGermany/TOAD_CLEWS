@@ -1,0 +1,55 @@
+# This workflow will install Python and sphinx, then it build the html documentation pages with sphinx and deploys it into the gh-pages branch
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Build HTML Pages for Docs 
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:    # Allows you to run this workflow manually from the Actions tab
+    
+# Set permissions for the workflow - necc. to write html-docs to gh-pages branch
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step to checkout the code from the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step to use the system's pre-installed Python for faster execution
+      - name: Use system Python (faster)
+        run: |
+          echo "Using pre-installed Python: $(python --version)"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_sphinx.txt
+
+      - name: Install toad-package
+        run: |
+          pip install -e .
+
+      - name: Install ghp-import
+        run: pip install ghp-import
+
+      - name: Build HTML
+        run: |
+          cd docs/
+          make toad
+
+      # GitHub Pages runs Jekyll by default, which ignores folders starting with "_"
+      # (like the Sphinx "_static" directory). The presence of a .nojekyll file
+      # tells GitHub Pages to serve the files as-is so static assets are not 404.
+      - name: Add .nojekyll to published docs
+        run: |
+          touch docs/build/docs/.nojekyll
+
+      - name: Run ghp-import
+        run: |
+          ghp-import -p -f docs/build/

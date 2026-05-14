@@ -1,0 +1,97 @@
+import logging
+from typing import Callable, Optional, Union
+
+import numpy as np
+
+logger = logging.getLogger("TOAD")
+
+
+class Preprocess:
+    """
+    Preprocessing methods for TOAD objects.
+
+    Note: Docstrings here are short as this class is under heavy development
+    """
+
+    def __init__(self, toad):
+        self.td = toad
+
+    def preprocess(self, keep_only=None):
+        """
+        Preprocess the data. To be implemented.
+        """
+
+        raise NotImplementedError("Preprocessing is not yet implemented.")
+
+        # Drop unnecessary variables
+        if keep_only:
+            self.data = self.data.drop_vars(
+                [v for v in self.data.data_vars if v not in keep_only]
+            )
+
+        # apply XMIP preprocessing ...
+
+        return self.data
+
+    def preprocess_variable(
+        self,
+        var: str,
+        filter_func: Callable,
+        fill_value: Optional[Union[float, int]] = np.nan,
+    ) -> None:
+        """Apply preprocessing filter to a variable.
+
+        Args:
+            var: Variable name
+            filter_func: Function that returns True for valid data points
+            fill_value: Value to use for filtered out points
+        """
+        data = self.td.data[var].where(filter_func(self.td.data[var]), fill_value)
+        self.td.data[var] = data
+
+    def dimension_to_variables(
+        self,
+        var: str,
+        dim: str,
+        drop_original: bool = True,
+        add_dim_to_name: bool = True,
+    ):
+        """
+        Convert a dimension in a dataset to separate variables.
+
+        Args:
+            var: Name of variable to process
+            dim: Name of dimension to convert to variables
+            drop_original: Whether to remove the original variable after conversion. Defaults to True.
+
+        Example:
+            # Convert realization dimension to variables for 'thk'
+            td.preprocess.dimension_to_variables(var='thk', dim='realization')
+        """
+        ds = self.td.data
+        # Check if dimension exists
+        if dim not in ds.dims and dim not in ds.coords:
+            raise ValueError(
+                f"Dimension '{dim}' not found in dataset. Available dimensions: {list(ds.dims.keys())}"
+            )
+
+        # Check if variable exists if specified
+        if var not in ds.data_vars:
+            raise ValueError(
+                f"Variable '{var}' not found in dataset. Available variables: {list(ds.data_vars.keys())}"
+            )
+
+        # Create new variables directly in the existing dataset
+        new_var_names = []
+        for val in ds[dim].values:
+            data = ds[var].sel({dim: val}).drop_vars(dim)
+            var_name = f"{var}_{dim}_{val}" if add_dim_to_name else f"{var}_{val}"
+            self.td.data[var_name] = data
+            self.td.data[var_name].attrs[dim] = val
+            new_var_names.append(var_name)
+
+        if drop_original:
+            # Drop the original variable and dimension
+            self.td.data = self.td.data.drop_vars(var).drop_dims(dim)
+
+        logger.info(f"Converted dimension {dim} to variables: {new_var_names}")

@@ -1,0 +1,127 @@
+# toml-file started Feb 2025 by Lukas Röhrich
+#
+# This file acts as a configuration file for the toad package
+# by Potsdam Institute for Climate Impact Research, GER
+#
+# Tutorial on how to setup this config file:
+# https://packaging.python.org/en/latest/guides/writing-pyproject-toml/
+
+# choose build-backend
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [
+    "setuptools",
+]
+
+# basic metadata
+[project]
+name = "tipmip-toad"
+dynamic = ["version"]
+description = "Tipping and Other Abrupt events Detector"
+readme = "README.md"
+keywords = ["tipping", "tipping points", "climate", "abrupt shifts", "earth system"]
+license = "BSD-2-Clause"
+requires-python = ">=3.10"
+authors = [
+    {name = "Jakob Harteg", email = "jakob.harteg@pik-potsdam.de"},
+    {name = "Lukas Roehrich", email = "lukas.roehrich@pik-potsdam.de"},
+    {name = "Sina Loriani", email = "sina.loriani@pik-potsdam.de"}
+]
+maintainers = [
+    {name = "Jakob Harteg", email = "jakob.harteg@pik-potsdam.de"}
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Oceanography",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "numpy>=2.2.0",
+    "matplotlib",
+    "scipy>=1.15.0",
+    "scikit-learn>=1.7.1",
+    "xarray",
+    "netcdf4",          # pipreqs didn't find this, but needed for xarray as optional dep to read *.nc files
+    "cartopy",
+    "pandas",
+    "numba",
+    "healpix",
+    "optuna",
+    "cftime",
+    "joblib",
+    "tqdm",
+    "tqdm-joblib"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+    "ruff",
+    "pytest",
+    "pytest-cov",
+    "deptry",
+    "sphinxawesome_theme",
+]
+
+[project.urls]
+Homepage = "https://tipmip.pik-potsdam.de/"
+Repository = "https://github.com/tipmip-methods/toad"
+
+[tool.setuptools]
+packages = {find = {}}
+
+[tool.setuptools.package-data]
+toad = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "toad._version.__version__"}
+
+[tool.deptry]
+ignore_notebooks = true
+
+[tool.deptry.per_rule_ignores]
+DEP002 = ["netcdf4", "pre-commit", "ruff", "pytest", "pytest-cov", "deptry", "sphinxawesome_theme"]
+
+# suppress warning about assuming corresponding module name
+[tool.deptry.package_module_name_map]
+numpy = "numpy"
+matplotlib = "matplotlib"
+scipy = "scipy"
+xarray = "xarray"
+netcdf4 = "netcdf4"
+cartopy = "cartopy" 
+pandas = "pandas"
+scikit-learn = "sklearn"
+numba = "numba"
+healpix = "healpix"
+optuna = "optuna"
+cftime = "cftime"
+joblib = "joblib"
+tqdm = "tqdm"
+tqdm-joblib = "tqdm_joblib"
+pre-commit = "pre_commit"
+ruff = "ruff"
+sphinxawesome_theme = "sphinxawesome_theme"
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+exclude = [
+    "build/",
+    "build/lib/",
+    "toad.egg-info/",
+    "docs/",
+    "tutorials/",
+    "test_artifacts/",
+    ".*",
+]
