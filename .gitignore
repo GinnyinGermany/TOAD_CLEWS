@@ -1,5 +1,6 @@
 *.png
 *.pdf
+paper/
 data/
 CMIP6 data/
 paper/
