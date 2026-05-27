@@ -1,0 +1,6 @@
+*.png
+*.pdf
+data/
+CMIP6 data/
+paper/
+.DS_Store
