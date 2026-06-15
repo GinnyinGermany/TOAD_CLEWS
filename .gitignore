@@ -1,7 +1,5 @@
 *.png
 *.pdf
 paper/
-data/
-CMIP6 data/
-paper/
+*.nc
 .DS_Store
