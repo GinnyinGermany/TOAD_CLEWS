@@ -1,5 +1,6 @@
-*.png
-*.pdf
-paper/
 *.nc
+!processed_data/*.nc
+!*.png
+paper/
 .DS_Store
+!**/.gitkeep
