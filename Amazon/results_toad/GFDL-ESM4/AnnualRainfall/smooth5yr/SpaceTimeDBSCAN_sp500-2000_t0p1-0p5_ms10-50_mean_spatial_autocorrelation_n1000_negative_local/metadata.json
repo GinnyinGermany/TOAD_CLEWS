@@ -1,0 +1,34 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "AnnualRainfall",
+    "rolling_years": 5,
+    "method": "SpaceTimeDBSCAN",
+    "shift_direction": "negative",
+    "shift_selection": "local",
+    "optimize": true,
+    "optimize_params": {
+        "spatial_eps": [
+            500.0,
+            2000.0
+        ],
+        "temporal_eps": [
+            0.1,
+            0.5
+        ],
+        "min_samples": [
+            10,
+            50
+        ]
+    },
+    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_direction": "maximize",
+    "optimize_n_trials": 1000,
+    "run_name": "GFDL-ESM4/AnnualRainfall/smooth5yr/SpaceTimeDBSCAN_sp500-2000_t0p1-0p5_ms10-50_mean_spatial_autocorrelation_n1000_negative_local",
+    "cluster_variable": "AnnualRainfall_dts_cluster",
+    "n_clusters_from_log": 0,
+    "n_clustered_points": 1,
+    "noise_percent": 100.0,
+    "n_noise_points": 1,
+    "n_clusters": 0,
+    "cluster_ids": []
+}
