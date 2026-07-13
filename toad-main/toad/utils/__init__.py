@@ -67,6 +67,13 @@ class _Attrs:
     # Attribute values
     TYPE_SHIFT: str = "shift"
     TYPE_CLUSTER: str = "cluster"
+    TYPE_CONSENSUS_CLUSTER: str = "consensus_cluster"
+    TYPE_CONSENSUS_RATE: str = "consensus_rate"
+
+    # Consensus companion metadata
+    CONSENSUS_LABELS_VAR: str = "consensus_labels_var"
+    CONSENSUS_RATE_SUFFIX: str = "_rate"
+    CLUSTER_VARS: str = "cluster_vars"
 
 
 _attrs = _Attrs()

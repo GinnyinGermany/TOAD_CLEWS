@@ -1,9 +1,10 @@
 import inspect
 import logging
-from typing import Union
+from typing import Literal, Union
 
 import cftime
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from toad.utils import (
@@ -13,6 +14,14 @@ from toad.utils import (
 )
 
 logger = logging.getLogger("TOAD")
+
+
+def _global_peak_time_index(ts: np.ndarray, threshold: float) -> np.int64:
+    """Time index of the global peak shift in one grid-cell series (middle-of-plateau rule)."""
+    from toad.utils.shift_selection_utils import _peak_global_for_ts
+
+    idx, _ = _peak_global_for_ts(np.asarray(ts, dtype=np.float64), float(threshold))
+    return np.int64(idx)
 
 
 class TimeStats:
@@ -344,9 +353,110 @@ class TimeStats:
         return self._return_time(float(np.mean(numeric_times)))
 
     def median(self, cluster_id) -> Union[float, cftime.datetime, np.datetime64]:
-        """Return median time of the cluster."""
+        """Median model time while the cluster mask is active anywhere in space.
+
+        This summarises the cluster's temporal footprint in the 3D cluster mask
+        (equivalent to :meth:`median_activity_time`). It is **not** the median
+        per-cell peak shift time; for that, use :meth:`pooled_median_transition_time`.
+        """
         numeric_times = self._get_cluster_numeric_times(cluster_id)
         return self._return_time(float(np.median(numeric_times)))
+
+    def median_activity_time(
+        self, cluster_id
+    ) -> Union[float, cftime.datetime, np.datetime64]:
+        """Median model time while the cluster exists anywhere in space.
+
+        See :meth:`median` for details.
+        """
+        return self.median(cluster_id)
+
+    def _pooled_transition_time_values(
+        self,
+        cluster_id: int,
+        shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+    ) -> np.ndarray:
+        """Per-cell peak-shift times (finite values only) within one cluster."""
+        transition_map = self.compute_transition_time(
+            cluster_ids=[cluster_id],
+            shift_threshold=shift_threshold,
+        )
+        values = transition_map.values.astype(float, copy=False).ravel()
+        return values[np.isfinite(values)]
+
+    def pooled_median_transition_time(
+        self,
+        cluster_id: int,
+        shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+    ) -> Union[float, cftime.datetime, np.datetime64]:
+        """Median of per-cell peak-shift times within the cluster.
+
+        Each grid cell contributes one transition time: the model time of
+        maximum ``|shift|`` above ``shift_threshold`` (same field as
+        :meth:`compute_transition_time`). This pools all cells in the cluster,
+        analogous to ``pooled_median_shift_time`` in
+        :meth:`Aggregation.consensus_summary`.
+        """
+        values = self._pooled_transition_time_values(cluster_id, shift_threshold)
+        if values.size == 0:
+            return np.nan
+        return self._return_time(float(np.median(values)))
+
+    def pooled_std_transition_time(
+        self,
+        cluster_id: int,
+        shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+    ) -> float:
+        """Sample standard deviation of per-cell peak-shift times in the cluster."""
+        values = self._pooled_transition_time_values(cluster_id, shift_threshold)
+        if values.size == 0:
+            return np.nan
+        return float(np.std(values))
+
+    def summary(
+        self,
+        cluster_ids: int | list[int] | range | None = None,
+        shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+    ) -> pd.DataFrame:
+        """Per-cluster table of activity-time vs pooled transition-time summaries.
+
+        Returns one row per cluster with:
+
+        * ``median_activity_time`` — median timestep while the cluster mask is
+          active anywhere in space (:meth:`median_activity_time`).
+        * ``pooled_median_transition_time`` / ``pooled_std_transition_time`` —
+          median and sample std of per-cell peak-shift times (pooled over all
+          cells), matching the spirit of ``pooled_*`` columns in
+          :meth:`Aggregation.consensus_summary`.
+        * ``n_transition_cells`` — number of cells with a finite transition time.
+        * ``start`` / ``end`` — first and last timestep with any cluster member.
+        """
+        if cluster_ids is None:
+            cluster_ids = list(self.td.get_cluster_ids(self.var))
+        elif isinstance(cluster_ids, int):
+            cluster_ids = [cluster_ids]
+        else:
+            cluster_ids = list(cluster_ids)
+
+        rows: list[dict] = []
+        for cluster_id in cluster_ids:
+            values = self._pooled_transition_time_values(cluster_id, shift_threshold)
+            rows.append(
+                {
+                    "cluster_id": int(cluster_id),
+                    "median_activity_time": self.median_activity_time(cluster_id),
+                    "pooled_median_transition_time": self.pooled_median_transition_time(
+                        cluster_id, shift_threshold
+                    ),
+                    "pooled_std_transition_time": self.pooled_std_transition_time(
+                        cluster_id, shift_threshold
+                    ),
+                    "n_transition_cells": int(values.size),
+                    "start": self.start(cluster_id),
+                    "end": self.end(cluster_id),
+                }
+            )
+        return pd.DataFrame(rows)
 
     def std(self, cluster_id) -> float:
         """Return standard deviation of the time of the cluster."""
@@ -388,12 +498,12 @@ class TimeStats:
         self,
         cluster_ids: int | list[int] | range | None = None,
         shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+        shift_direction: Literal["both", "positive", "negative"] | str = "both",
     ) -> xr.DataArray:
         """Computes the transition time for each grid cell.
 
         This method identifies the time point of maximum rate of change (peak shift) for each
-        spatial location in the data. It uses the absolute value of shifts to detect both
-        positive and negative transitions.
+        spatial location in the data.
 
         Args:
             cluster_ids: Optional integer or list of integers specifying which cluster IDs to analyze.
@@ -402,6 +512,9 @@ class TimeStats:
             shift_threshold: Optional float specifying the minimum absolute shift value that should
                 be considered a valid transition. Defaults to 0.5. Grid cells with maximum shift
                 values below this threshold will be marked as having no transition (NaN).
+            shift_direction: Sign of shifts to retain when locating the global peak per grid cell.
+                Options are ``"both"``, ``"positive"``, and ``"negative"`` (same convention as
+                :func:`toad.clustering.compute_clusters`). Defaults to ``"both"``.
 
         Returns:
             xarray DataArray containing the transition time for each grid cell. Grid cells
@@ -409,14 +522,18 @@ class TimeStats:
             spatial dimensions as the input shifts data.
 
         Note:
-            The transition time is determined by finding the time index where the absolute
-            value of the shifts reaches its maximum for each grid cell. This corresponds to
-            the point of most rapid change in the underlying data.
+            Shifts are restricted to the requested sign before locating the global peak per
+            grid cell via :func:`toad.utils.shift_selection_utils._peak_global_for_ts`
+            (middle of any maximum-|shift| plateau), so e.g. ``shift_direction="negative"``
+            returns the timing of the largest negative shift.
 
-            For grid cells where the maximum absolute shift value is below shift_threshold,
-            or where no clear transition is detected, NaN values will be returned.
+            Grid cells with no peak above ``shift_threshold`` in the requested direction
+            return NaN.
         """
-        from toad.clustering import _compute_dts_peak_sign_mask
+        if shift_direction not in ("both", "positive", "negative"):
+            raise ValueError(
+                'shift_direction must be "both", "positive", or "negative"'
+            )
 
         # If user has specified a cluster variable, we need to get the shifts variable from attrs
         shifts = self.td.get_shifts(self.var)
@@ -430,36 +547,38 @@ class TimeStats:
             shifts = shifts.where(shifts[self.td.time_dim] >= start, 0.0)
             shifts = shifts.where(shifts[self.td.time_dim] <= end, 0.0)
 
-        # TODO could this be made faster by replacing with argmax(shifts)?
-        max_dts_mask = _compute_dts_peak_sign_mask(
+        if shift_direction == "positive":
+            shifts = shifts.where(shifts > 0)
+        elif shift_direction == "negative":
+            shifts = shifts.where(shifts < 0)
+
+        time_dim = self.td.time_dim
+        time_indices = xr.apply_ufunc(
+            _global_peak_time_index,
             shifts,
-            self.td.time_dim,
-            shift_selection="global",  # use global to largest shift
-            shift_threshold=shift_threshold,
+            kwargs={"threshold": shift_threshold},
+            input_core_dims=[[time_dim]],
+            vectorize=True,
+            output_dtypes=[np.int64],
         )
 
-        max_dts_mask = np.abs(max_dts_mask)
-
-        # Get the indices where mask is 1 for each grid cell
-        time_indices = max_dts_mask.argmax(
-            axis=0
-        )  # This will give us a (76,76) array of indices
-
-        # Create a mask for grid cells that actually have a 1
-        has_peak = max_dts_mask.sum(axis=0) > 0
-
-        # Create a DataArray with the same coordinates as the spatial dimensions of your data
         time_coords = self.td.numeric_time_values
 
-        # For cells with no peak, we'll use -1 as a marker
-        time_indices = xr.where(has_peak, time_indices, -1)
+        idx_np = time_indices.values.astype(np.int64, copy=False)
+        out_np = np.full(idx_np.shape, np.nan, dtype=float)
+        valid = idx_np >= 0  # _peak_global_for_ts returns -1 when below threshold
+        out_np[valid] = time_coords[idx_np[valid]]
 
-        # Now create the output array with dataset's time values
-        time_values = xr.where(time_indices >= 0, time_coords[time_indices], np.nan)
-
-        # Add metadata to the DataArray
-        time_values = time_values.rename("transition_time")  # Give it a meaningful name
+        time_values = xr.DataArray(
+            out_np,
+            coords=time_indices.coords,
+            dims=time_indices.dims,
+            name="transition_time",
+        )
         time_values.attrs["long_name"] = self.td.data[self.td.time_dim].name
         time_values.attrs["units"] = self.td.numeric_time_values_unit()
-        time_values.attrs["description"] = "Time point of maximum rate of change"
+        time_values.attrs["description"] = (
+            "Time point of maximum rate of change; pool over cells with "
+            "TimeStats.pooled_median_transition_time"
+        )
         return time_values

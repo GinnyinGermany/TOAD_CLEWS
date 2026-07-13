@@ -31,6 +31,7 @@ import xarray as xr
 from sklearn.base import ClusterMixin
 
 from toad._version import __version__
+from toad.clustering.methods.space_time_dbscan import SpaceTimeDBSCAN
 from toad.clustering.optimizing import (
     _optimize_clusters,
     combined_spatial_nonlinearity,
@@ -39,8 +40,8 @@ from toad.clustering.optimizing import (
 from toad.regridding import HealPixRegridder
 from toad.regridding.base import BaseRegridder
 from toad.utils import (
-    _attrs,
     DEFAULT_SHIFT_THRESHOLD,
+    _attrs,
     _reorder_space_dims,
     get_latlon_info,
     get_unique_variable_name,
@@ -54,6 +55,7 @@ __all__ = [
     "default_opt_params",
     "combined_spatial_nonlinearity",
     "sorted_cluster_labels",
+    "SpaceTimeDBSCAN",
 ]
 
 # to avoid circular import we use TYPE_CHECKING for importing TOAD obj
@@ -148,10 +150,10 @@ def compute_clusters(
         - Apply optional regridding to standardize coordinates
         - Scale coordinates using sklearn preprocessing
         - Scale time values by time_weight
-        - Calculate weights from shift magnitudes
+        - Calculate shift magnitudes at selected points (passed as ``y``; see TODO below)
     3. Clustering
         - Store clustering parameters as metadata
-        - Fit clustering model to coordinates using weights
+        - Fit clustering model to coordinates (built-in clusterers ignore ``y`` today)
         - Generate cluster labels for each point
     4. Postprocessing
         - Sort clusters by size if requested
@@ -259,7 +261,7 @@ def compute_clusters(
         else:
             cond = (sh < -shift_threshold) & has_valid_data
 
-    # boolean → indices (tuple: (t_idx, *space_idx))
+    # boolean → indices per axis (axis order matches sh.dims, not necessarily time-first)
     cond_vals = np.asarray(cond.data)
     idx = np.nonzero(cond_vals)
     n_pts = idx[0].size
@@ -281,6 +283,14 @@ def compute_clusters(
         space_dims = td.space_dims
         space_dims = _reorder_space_dims(space_dims)
 
+        # Map flat indices from np.nonzero to dimension names (matches sh.dims axis order)
+        dims_sh = list(sh.dims)
+        idx_by_dim = {dims_sh[i]: idx[i] for i in range(len(dims_sh))}
+        if td.time_dim not in idx_by_dim:
+            raise ValueError(
+                f"time dimension {td.time_dim!r} not found in shifts dims {dims_sh}"
+            )
+
         # Determine latitude/longitude names and grid type from dataset
         lat_name, lon_name, has_latlon, is_latlon_dims = get_latlon_info(
             td.data, space_dims
@@ -288,29 +298,39 @@ def compute_clusters(
 
         # Build coordinates array (NumPy only, no DataFrame merges)
         # time coordinate
-        time_numeric = td.numeric_time_values[idx[0]]
+        time_numeric = td.numeric_time_values[idx_by_dim[td.time_dim]]
 
         # ==================== COORDINATES ====================
         if is_latlon_dims:
             # lat/lon are 1D dims: index directly
-            lat_vals = td.data[lat_name].values[idx[1]]
-            lon_vals = td.data[lon_name].values[idx[2]]
+            lat_vals = td.data[lat_name].values[idx_by_dim[lat_name]]
+            lon_vals = td.data[lon_name].values[idx_by_dim[lon_name]]
             coords = np.column_stack((time_numeric, lat_vals, lon_vals))
         elif has_latlon:
             # Irregular i/j grids: take 2D lat/lon variables aligned with space_dims
             lat_grid = td.data[lat_name].transpose(*space_dims).values
             lon_grid = td.data[lon_name].transpose(*space_dims).values
-            lat_vals = lat_grid[tuple(idx[1:])]
-            lon_vals = lon_grid[tuple(idx[1:])]
+            space_index_tuple = tuple(idx_by_dim[d] for d in space_dims)
+            lat_vals = lat_grid[space_index_tuple]
+            lon_vals = lon_grid[space_index_tuple]
             coords = np.column_stack((time_numeric, lat_vals, lon_vals))
         else:
             # No lat/lon (as dims or coords or variables) → Fall back to using raw index dimensions (e.g., x/y or i/j)
             cols = [time_numeric]
-            for d, i_idx in zip(space_dims, idx[1:]):
+            for d in space_dims:
                 vals_d = td.data[shifts_variable].coords[d].values
-                cols.append(vals_d[i_idx])
+                cols.append(vals_d[idx_by_dim[d]])
             coords = np.column_stack(cols)
 
+        # TODO(clustering-weights): Shift magnitudes are passed as ``y`` but built-in
+        # clusterers (HDBSCAN, sklearn DBSCAN, SpaceTimeDBSCAN) do not use them.
+        # Magnitudes only affect point selection upstream (shift_threshold / shift_selection).
+        # HealPix regridding averages magnitudes when binning duplicate pixels.
+        # Decide later whether to:
+        #   - stop passing ``y`` by default and document ``y`` as a custom-clusterer hook only;
+        #   - implement a weighted clusterer; or
+        #   - wire ``sample_weight`` where sklearn supports it.
+        # See tutorials/custom_clustering.ipynb for the intended custom ``y`` API.
         # take absolute value of shifts as weights (at selected points)
         vals_sh = np.asarray(sh.data)[idx]
         weights = np.abs(vals_sh)
@@ -369,9 +389,7 @@ def compute_clusters(
         # ==================== APPLY CLUSTERING METHOD ====================
         cluster_start = time_now()
         try:
-            cluster_labels = np.array(
-                method.fit_predict(X=coords, y=weights)
-            )  # todo: make passing weights optional
+            cluster_labels = np.array(method.fit_predict(X=coords, y=weights))
         except ValueError as e:
             if "min_samples" in str(e) and "must be at most" in str(e):
                 logger.warning(
@@ -486,22 +504,35 @@ def _format_cluster_summary(
 
 
 def sorted_cluster_labels(cluster_labels: np.ndarray) -> np.ndarray:
-    """Sort clusters by size (largest cluster -> 0, second largest -> 1, etc., keeping -1 for noise)"""
-    # Get unique labels and counts, excluding -1
-    unique_labels, counts = np.unique(
-        cluster_labels[cluster_labels != -1], return_counts=True
-    )
+    """Sort clusters by size (largest cluster -> 0, second largest -> 1, etc., keeping -1 and NaN).
 
-    # Sort by counts in descending order
+    Non-finite values (e.g. NaN meaning “no shift” in a label field) are left unchanged
+    and excluded from the size-based renumbering.
+    """
+    original_shape = cluster_labels.shape
+    flat = np.ravel(np.asarray(cluster_labels))
+    valid = np.isfinite(flat) & (flat != -1)
+    if not np.any(valid):
+        return np.asarray(cluster_labels).copy()
+
+    unique_labels, counts = np.unique(flat[valid], return_counts=True)
     sorted_indices = np.argsort(counts)[::-1]
     sorted_unique_labels = unique_labels[sorted_indices]
+    label_mapping = {int(old): new for new, old in enumerate(sorted_unique_labels)}
+    label_mapping[-1] = -1
 
-    # Create mapping from old labels to new labels (0 to n-1)
-    label_mapping = {old: new for new, old in enumerate(sorted_unique_labels)}
-    label_mapping[-1] = -1  # Keep -1 for noise points
-
-    # Apply mapping to all labels
-    return np.array([label_mapping[label] for label in cluster_labels])
+    out = np.empty(flat.shape, dtype=np.float64)
+    for i, label in enumerate(flat):
+        if not np.isfinite(label):
+            out[i] = np.nan
+        elif int(label) == -1:
+            out[i] = -1.0
+        else:
+            out[i] = float(label_mapping[int(label)])
+    out = out.reshape(original_shape)
+    if np.issubdtype(cluster_labels.dtype, np.integer) and np.all(np.isfinite(flat)):
+        return np.round(out).astype(np.int64)
+    return out
 
 
 def geodetic_to_cartesian(time, lat, lon, height=0) -> np.ndarray:

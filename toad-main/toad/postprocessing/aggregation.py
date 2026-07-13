@@ -1,33 +1,190 @@
 import logging
-from itertools import combinations
-from typing import List, Tuple
+from typing import Any, List, Literal
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-# from scipy.sparse import coo_matrix  # only used in utils helpers
-from scipy.sparse.csgraph import connected_components
-from tqdm import tqdm
-
-# from sklearn.neighbors import NearestNeighbors  # unused here; kept in utils
+from toad._version import __version__
 from toad.clustering import sorted_cluster_labels
-from toad.regridding.healpix import HealPixRegridder
-
-# from toad.regridding.healpix import HealPixRegridder  # unused here; used in utils
-from toad.utils import get_latlon_info, get_unique_variable_name
+from toad.postprocessing.member_support_consensus import (
+    _accumulate_member_support,
+    _build_grid_context,
+    _build_member_support_dataset,
+    _empty_result,
+    min_consensus_members,
+)
+from toad.utils import _attrs, get_unique_variable_name
 from toad.utils.cluster_consensus_utils import (
-    _add_adjacent_true_pairs,
-    _build_consensus_summary_df,
-    _build_empty_consensus_summary_df,
-    _build_knn_edges_from_latlon,
-    _build_knn_edges_from_regridder,
-    _compute_weighted_consensus,
-    _knn_edges_from_mask,
-    _native_edges_from_mask,
+    StitchMeridianSetting,
+    _build_consensus_summary_df_spacetime,
+    _consensus_input_support_mask,
+    consensus_shift_time_distribution,
+    consensus_shift_time_distributions,
+    label_field_shift_time_distributions,
+    label_field_shift_time_samples,
+    resolve_stitch_meridian,
 )
 
 logger = logging.getLogger("TOAD")
+
+
+def _format_consensus_summary(output_label: str, labels: np.ndarray) -> str:
+    """One-line summary for logging after :meth:`Aggregation.compute_consensus`.
+
+    Mirrors :func:`toad.clustering._format_cluster_summary` in tone and ANSI styling.
+    """
+    flat = np.asarray(labels, dtype=np.float64).ravel()
+    n = int(flat.size)
+    if n == 0:
+        return f"{output_label}: empty consensus grid"
+
+    n_no_shift = int(np.count_nonzero(~np.isfinite(flat)))
+    noise = int(np.count_nonzero(np.isfinite(flat) & (flat == -1)))
+    # Two decimals: with .1f, sub-percent shares (e.g. 0.05%) round to "0.0%" and
+    # look inconsistent with a nonzero (noise:,) count.
+    pct_noise = 100.0 * noise / n
+    pct_no_shift = 100.0 * n_no_shift / n
+    pos = flat[np.isfinite(flat) & (flat >= 0)]
+    n_clusters = int(np.unique(pos).size) if pos.size else 0
+
+    clusters_text = f"{n_clusters} {'consensus cluster' if n_clusters == 1 else 'consensus clusters'}"
+    return (
+        f"New consensus variable \033[1m{output_label}\033[0m: Identified \033[1m{clusters_text}\033[0m "
+        f"over {n:,} spacetime cells; {pct_noise:.2f}% shift noise / not in consensus ({noise:,} cells); "
+        f"{pct_no_shift:.2f}% no abrupt shift ({n_no_shift:,} cells NaN)."
+    )
+
+
+def _filter_consensus_labels_min_size(
+    da_labels: xr.DataArray,
+    da_rate: xr.DataArray,
+    min_cluster_area: int,
+    *,
+    time_dim: str,
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Remove consensus clusters whose spatial footprint is too small.
+
+    For each cluster id, ``area`` is the number of spatial cells where that id appears at
+    any time along ``time_dim`` (same definition as the ``area`` column in
+    :func:`toad.utils.cluster_consensus_utils._build_consensus_summary_df_spacetime`).
+    Clusters with ``area < min_cluster_area`` are set to noise ``-1``. Remaining clusters
+    are renumbered by :func:`toad.clustering.sorted_cluster_labels` (largest id 0, etc.).
+    The companion rate field is left unchanged (member-support fractions are
+    independent of the consensus threshold and cluster-size filter).
+    """
+    if min_cluster_area <= 0:
+        return da_labels, da_rate
+    if time_dim not in da_labels.dims:
+        raise ValueError(
+            f"`time_dim` {time_dim!r} must be a dimension of `da_labels`, "
+            f"got dims={tuple(da_labels.dims)}."
+        )
+    lab = np.asarray(da_labels.data, dtype=np.float64)
+    flat = lab.ravel()
+    time_axis = da_labels.get_axis_num(time_dim)
+    lab_ts = np.moveaxis(lab, time_axis, 0).reshape(lab.shape[time_axis], -1)
+    valid = np.isfinite(lab_ts) & (lab_ts >= 0)
+    if not np.any(valid):
+        return da_labels, da_rate
+
+    # Count distinct spatial cells ever labelled with each consensus id (any time)
+    label_ids = lab_ts[valid].astype(np.int64, copy=False)
+    spatial_ids = np.broadcast_to(
+        np.arange(0, lab_ts.shape[1], dtype=np.int64).reshape(1, -1),
+        lab_ts.shape,
+    )[valid]
+    label_space_pairs = np.column_stack((label_ids, spatial_ids))
+    unique_pairs = np.unique(label_space_pairs, axis=0)
+    unique_ids, areas = np.unique(unique_pairs[:, 0], return_counts=True)
+    remove = unique_ids[areas < int(min_cluster_area)]
+    if remove.size == 0:
+        return da_labels, da_rate
+
+    # Demote small clusters to noise (-1) and re-sort ids
+    flat = flat.copy()
+    fin = np.isfinite(flat)
+    flat[fin & np.isin(flat, remove.astype(np.float64))] = -1.0
+    flat = sorted_cluster_labels(flat)
+    lab_out = flat.reshape(lab.shape)
+    da_l = xr.DataArray(
+        lab_out,
+        coords=da_labels.coords,
+        dims=da_labels.dims,
+        attrs=da_labels.attrs,
+        name=da_labels.name,
+    )
+    return da_l, da_rate
+
+
+def _finalize_consensus_variables(
+    td: Any,
+    *,
+    ds_out: xr.Dataset,
+    new_output_label: str,
+    cluster_vars: List[str],
+    min_consensus: float,
+    temporal_tolerance: int,
+    spatial_tolerance: int,
+    stitch_meridian: StitchMeridianSetting,
+    stitch_meridian_resolved: bool,
+    min_cluster_area: int | None,
+    time_dim: str,
+) -> np.ndarray:
+    """Rename solver outputs, post-filter, attach TOAD attrs, and merge into ``td.data``."""
+    # --- rename interim solver variables to user-facing names ---
+    da_labels = ds_out["clusters"].rename(new_output_label)
+    da_rate = ds_out["rate"].rename(f"{new_output_label}{_attrs.CONSENSUS_RATE_SUFFIX}")
+
+    # --- optional post-filter on spatial footprint (see _filter_consensus_labels_min_size) ---
+    if min_cluster_area is not None and min_cluster_area > 0:
+        da_labels, da_rate = _filter_consensus_labels_min_size(
+            da_labels,
+            da_rate,
+            min_cluster_area,
+            time_dim=time_dim,
+        )
+        da_labels.attrs["min_cluster_area"] = int(min_cluster_area)
+        da_rate.attrs["min_cluster_area"] = int(min_cluster_area)
+
+    # --- TOAD metadata (method params, variable_type, cluster_vars, version) ---
+    lab = np.asarray(da_labels.data, dtype=np.float64)
+    min_votes = min_consensus_members(len(cluster_vars), min_consensus)
+    consensus_param_attrs: dict[str, object] = {
+        "consensus_method": "member_support",
+        "min_consensus": min_consensus,
+        "min_consensus_members": min_votes,
+        "temporal_tolerance": temporal_tolerance,
+        "spatial_tolerance": spatial_tolerance,
+        "stitch_meridian": (
+            int(stitch_meridian)
+            if isinstance(stitch_meridian, bool)
+            else stitch_meridian
+        ),
+        "stitch_meridian_applied": int(stitch_meridian_resolved),
+    }
+    da_labels.attrs.update(consensus_param_attrs)
+    da_rate.attrs.update(consensus_param_attrs)
+    da_labels.attrs[_attrs.VARIABLE_TYPE] = _attrs.TYPE_CONSENSUS_CLUSTER
+    u = np.unique(lab[np.isfinite(lab) & (lab >= 0)])
+    da_labels.attrs[_attrs.CLUSTER_IDS] = (
+        u.astype(int) if u.size else np.array([], dtype=int)
+    )
+    da_labels.attrs[_attrs.CLUSTER_VARS] = list(cluster_vars)
+    da_labels.attrs[_attrs.TOAD_VERSION] = __version__
+
+    da_rate.attrs[_attrs.VARIABLE_TYPE] = _attrs.TYPE_CONSENSUS_RATE
+    da_rate.attrs[_attrs.CONSENSUS_LABELS_VAR] = new_output_label
+    da_rate.attrs[_attrs.CLUSTER_VARS] = list(cluster_vars)
+    da_rate.attrs[_attrs.TOAD_VERSION] = __version__
+
+    # --- merge label + rate pair into td.data ---
+    td.data = xr.merge(
+        [td.data, da_labels, da_rate],
+        combine_attrs="override",
+        compat="override",
+    )
+    return lab
 
 
 class Aggregation:
@@ -42,626 +199,553 @@ class Aggregation:
         self,
         cluster_vars: list[str] | None = None,
     ) -> xr.DataArray:
-        """Calculate the normalized occurrence rate of points being part of any cluster.
+        """Share of input clusterings in which a grid cell was ever assigned a cluster.
 
-        For each point in space, calculates how many times it is part of a cluster
-        (not noise) across different clustering variables, normalized by the total
-        number of clusterings. This is done by checking if each point was ever part
-        of a cluster (cluster label > -1) for each clustering variable, summing these
-        occurrences, and dividing by the total number of clustering variables.
+        For each spatial cell and each label field, TOAD checks whether any timestep
+        has a non-noise label (``>= 0``); multiple cluster events at different times
+        in the same run still count as one ``yes``. The result is the mean over inputs,
+        in ``[0, 1]`` (``1`` = every included clustering ever labelled that cell).
+
+        This is a time-collapsed hotspot diagnostic, not spacetime consensus: it does
+        not require agreement on timing or cluster id across inputs.
 
         Args:
-            cluster_vars: List of clustering variable names to consider. If None,
-                uses all clustering variables in the TOAD object. Each variable should
-                contain cluster labels where -1 indicates noise points and values >= 0
-                indicate cluster membership.
+            cluster_vars: Label variables to include. If None, uses all
+                :attr:`TOAD.cluster_vars`. Each must use ``-1`` for noise and ``>= 0`` for
+                cluster membership.
 
         Returns:
-            DataArray containing the normalized cluster occurrence rate for each point.
-            Values range from 0 (never in a cluster) to 1 (always in a cluster).
-            The output variable name will be "cluster_occurrence_rate" with a numeric
-            suffix if that name already exists in the dataset.
-
-        Example:
-            If a point is part of a cluster in 2 out of 3 clustering variables,
-            its occurrence rate would be 2/3 ≈ 0.67.
+            2D DataArray named ``cluster_occurrence_rate`` (or a uniquified name).
         """
-        # Determine clustering variables
         cluster_vars = cluster_vars if cluster_vars else self.td.cluster_vars
-
-        # Normalize by the total number of clusterings
-        num_clusterings = len(cluster_vars)
-        cluster_normalized = xr.where(
-            self.td.data[cluster_vars[0]].max(dim=self.td.time_dim) > -1,
-            1.0 / num_clusterings,
-            0,
-        )
-        # in-place summation to conserve memory
-        for cluster_var in cluster_vars[1:]:
-            cluster_normalized += xr.where(
-                self.td.data[cluster_var].max(dim=self.td.time_dim) > -1,
-                1.0 / num_clusterings,
-                0,
+        if not cluster_vars:
+            raise ValueError(
+                "cluster_vars is empty; add cluster label variables or pass a non-empty list."
             )
 
-        # Set name
+        ever_clustered = xr.concat(
+            [
+                (self.td.data[cvar].max(dim=self.td.time_dim) > -1).astype(np.float32)
+                for cvar in cluster_vars
+            ],
+            dim="_cluster_input",
+        )
+        cluster_normalized = ever_clustered.mean(dim="_cluster_input")
+
         output_label = get_unique_variable_name(
             "cluster_occurrence_rate", self.td.data, self.td.logger
         )
         cluster_normalized = cluster_normalized.rename(output_label)
-
-        # Add attributes
         cluster_normalized.attrs.update(
             {
-                "cluster_vars": cluster_vars,
-                "description": "Normalized occurrence rate of points being part of any cluster",
+                "cluster_vars": list(cluster_vars),
+                "description": (
+                    "Fraction of input clusterings that ever assigned a non-noise "
+                    "label at this cell (time collapsed; 1 = all inputs)"
+                ),
             }
         )
-
         return cluster_normalized
 
-    def cluster_consistency(self, cluster_vars: list[str] | None = None):
-        """
-        Evaluate the spatial consistency of cluster membership for each grid cell
-        across multiple clustering variables (e.g., from different models).
-
-        **⚠️ Deprecated:** This function is conceptually superseded by `cluster_consensus()`.
-        The Jaccard-based cluster consistency metric is retained for backwards compatibility
-        but will be removed in a future release. The `consistency` field returned by
-        `cluster_consensus()` provides a more efficient and interpretable measure of local
-        co-association across runs.
-
-        This function measures how stable the *spatial neighborhood* of each grid cell's
-        cluster is across clustering variables, using the Jaccard similarity.
-
-        For each grid cell:
-        1. Identify which cluster it belongs to in each clustering variable.
-        2. For every pair of clusterings, retrieve the full set of grid cells that were
-        in the same cluster, and compute the Jaccard similarity between these sets.
-        (Jaccard = |A ∩ B| / |A ∪ B|)
-        3. Average the Jaccard scores over all clustering pairs to obtain a consistency score.
-
-        Interpretation:
-        - A score near 1.0 means the cell consistently clusters with the same spatial
-        neighborhood across different clustering setups.
-        - A score near 0.0 means the cell's cluster context varies substantially.
-        - NaN is returned if the cell is unclustered (noise) in all clustering variables.
-
-        Args:
-            td: TOAD object containing clustering results.
-            cluster_vars: Optional list of cluster variable names. If None, uses td.cluster_vars.
-
-        Returns:
-            xr.DataArray: Stability scores per grid cell, with the same spatial shape
-                        as the input data and values in [0, 1] or NaN.
-        """
-        print(
-            "This function is deprecated and will be removed in a future release. Use cluster_consensus() instead."
-        )
-        # get all cluster vars if nothing is provided
-        if cluster_vars is None:
-            cluster_vars = list(self.td.cluster_vars)
-
-        n_vars = len(cluster_vars)
-
-        # Get grid dimensions from first clustering
-        data0 = self.td.data[cluster_vars[0]].isel({self.td.time_dim: 0})
-        N = data0.size
-        grid_shape = data0.shape
-
-        # Cache which grid cells belonged to each cluster
-        membership_lookup = precompute_spatial_memberships(self.td, cluster_vars)
-
-        # For each grid cell, get its cluster ID in each clustering
-        # Take max over time since cluster IDs are consistent
-        cluster_maps = np.stack(
-            [
-                self.td.data[cvar].max(dim=self.td.time_dim).values.flatten()
-                for cvar in cluster_vars
-            ],
-            axis=1,
-        )  # shape: (N, n_vars)
-
-        # Compute stability for each grid cell
-        stability_scores = np.zeros(N, dtype=np.float32)
-        for i in range(N):
-            jaccards = []
-            # Compare each pair of clusterings
-            for v1, v2 in combinations(range(n_vars), 2):
-                cid1 = cluster_maps[i, v1]
-                cid2 = cluster_maps[i, v2]
-                if cid1 < 0 or cid2 < 0:
-                    continue  # Skip if cell was noise in either clustering
-
-                # Get spatial extent of both clusters
-                members1 = membership_lookup.get((cluster_vars[v1], cid1), set())
-                members2 = membership_lookup.get((cluster_vars[v2], cid2), set())
-                jaccards.append(jaccard_similarity(members1, members2))
-
-            # Average similarities, or NaN if cell was noise in all comparisons
-            stability_scores[i] = np.mean(jaccards) if jaccards else np.nan
-
-        return xr.DataArray(
-            stability_scores.reshape(grid_shape),
-            coords=data0.coords,
-            dims=data0.dims,
-            name="Jaccard similarity",
-        )
-
-    def cluster_consensus(
+    def compute_consensus(
         self,
         cluster_vars: List[str] | None = None,
-        min_consensus: float = 0.75,
-        top_n_clusters: int | None = None,
-        neighbor_connectivity: int = 8,
-        regridder: HealPixRegridder | None = None,
-        k_neighbors: int = 8,
+        *,
+        min_consensus: float,
+        temporal_tolerance: int,
+        spatial_tolerance: int,
+        stitch_meridian: StitchMeridianSetting = "auto",
         show_progress: bool = True,
-    ) -> Tuple[xr.Dataset, pd.DataFrame]:
-        """Build a spatial consensus clustering from multiple clustering results.
+        output_label_suffix: str = "",
+        output_label: str | None = None,
+        overwrite: bool = False,
+        min_cluster_area: int | None = 2,
+    ) -> None:
+        """Merge several input cluster maps into one spacetime consensus field on ``self.td.data``.
 
-        Implements a consensus aggregation method closely related to evidence accumulation clustering (EAC)
-        from [Fred+Jain2005]_, but reformulated for spatial grid data. Instead of dense all-pairs
-        co-association, we accumulate "votes" only between spatially neighboring cells, yielding a
-        scalable sparse adjacency graph from which consensus regions are formed.
+        Use this when you have multiple cluster label fields on the same time × space grid
+        (different models, parameters, or variables) and want regions where enough inputs
+        agree that an abrupt shift occurred, within chosen time and space windows.
 
-        The method produces robust, spatially coherent regions that persist across clustering
-        choices/variables by combining clusterings through a graph-based consensus approach.
+        **Algorithm**
+
+        1. For each input, build a mask of **native event voxels** (non-noise cluster labels,
+           ``>= 0``).
+        2. Dilate each mask in ``(time, y, x)`` by ``temporal_tolerance`` and
+           ``spatial_tolerance`` for **support counting only**.
+        3. At each native event voxel, count how many distinct inputs have dilated support
+           covering that cell.
+        4. Retain the voxel if the count reaches ``max(1, ceil(min_consensus * n_inputs))``.
+        5. Group retained voxels into consensus cluster ids using the same tolerances for
+           spacetime connectivity (``max(1, tolerance)`` along each axis).
+        6. Optionally drop clusters whose spatial footprint is below ``min_cluster_area``.
+
+        Dilation never writes extra cells to the output: only voxels that were **detected** in
+        at least one input can appear in the consensus mask. Spatial tolerance is in native
+        grid indices, not kilometres. With ``stitch_meridian``, the first and last longitude
+        column can be treated as neighbours during dilation and labelling on global grids.
+
+        **Writes**
+
+        Two variables are merged into ``self.td.data`` (default names ``cluster_consensus`` and
+        ``cluster_consensus_rate``):
+
+        * **Labels** (``variable_type=consensus_cluster``): ``NaN`` if every input has no
+          abrupt shift at that cell; ``-1`` if at least one input had a defined label but the
+          cell is not in consensus (or was filtered out); non-negative integers are consensus
+          cluster ids.
+        * **Rate** (``variable_type=consensus_rate``): supporting inputs divided
+          by total inputs at each native event voxel, **including** voxels below the consensus
+          threshold; ``0`` where no input assigned a cluster; ``NaN`` where the label is
+          ``NaN``.
+
+        Both arrays store ``cluster_vars``, ``min_consensus``, ``min_consensus_members``,
+        tolerance settings, and ``stitch_meridian`` / ``stitch_meridian_applied``. For a
+        per-cluster table after the fact, call :meth:`consensus_summary`.
 
         Args:
-            cluster_vars: List of clustering variable names to include in the consensus.
-                If None, uses all cluster variables in self.td.cluster_vars.
-            min_consensus: Minimum fraction (in [0,1]) of clusterings that must support an edge
-                (pixel adjacency) for it to be included in the consensus graph. Higher values =
-                stricter consensus. Default: 0.5.
-            top_n_clusters: If set, only top N largest clusters (per clustering) are used when
-                voting for edges. If None, all clusters are included. Default: None.
-            neighbor_connectivity: Neighborhood connectivity for spatial adjacency when lat/lon
-                coordinates are not available. Either 4 (Von Neumann, horizontal/vertical only)
-                or 8 (Moore, including diagonals). Default: 8. This parameter controls index-based
-                grid adjacency (not K-nearest neighbors) and is only used for grids without
-                geographic coordinates; for lat/lon grids, see `k_neighbors`.
-            regridder: Optional custom regridder. If None and data has regular lat/lon dimensions,
-                HealPixRegridder will be used automatically. Default: None.
-                **Note:** Currently only HealPixRegridder is supported for consensus clustering.
-                Other regridders will raise a ValueError.
-            k_neighbors: Number of nearest neighbors to consider for lat/lon grids using
-                K-nearest neighbors on the sphere. Only applies when lat/lon coordinates are
-                available. Higher values provide more connectivity but may be less spatially
-                selective. Default: 8. For very high-resolution grids, consider increasing to
-                12-16; for coarse grids, 4-6 may suffice.
-            show_progress: Whether to show the progress bar. Default: True.
-
-        Returns:
-            Tuple[xr.Dataset, pd.DataFrame]: A tuple containing:
-
-            Dataset with two variables:
-                - ``clusters`` (int32, shape (y, x)): Consensus cluster/component labels.
-                  Values >= 0 indicate cluster membership; -1 indicates noise/unassigned.
-                - ``consistency`` (float32, shape (y, x)): Local mean of co-association edge
-                  weights around each pixel, reflecting neighborhood agreement across input
-                  cluster maps.
-
-            DataFrame with one row per consensus cluster, containing:
-                - ``cluster_id`` (int32): Cluster identifier.
-                - ``mean_consistency`` (float32): Mean consistency score for the cluster.
-                - ``size`` (int32): Number of spatial grid cells in the cluster.
-                - ``mean_{space_dim0}`` (float32): Average spatial coordinate for first dimension.
-                - ``mean_{space_dim1}`` (float32): Average spatial coordinate for second dimension.
-                - ``mean_mean_shift_time`` (float32): Central estimate of transition time,
-                  averaged over space and clusterings.
-                - ``std_mean_shift_time`` (float32): Variation in average shift time across
-                  clusterings.
-                - ``mean_std_shift_time`` (float32): Average spatial spread of shift timing.
-                - ``std_std_shift_time`` (float32): Variation in spatial coherence across
-                  clusterings.
-
-        Notes:
-            The algorithm proceeds as follows:
-
-            1. Collapse time in each clustering map: mark a pixel as "clustered" if it is ever
-               assigned to a cluster at any time.
-            2. For each clustering, obtain the spatial footprint of each cluster. Optionally,
-               restrict to the top N clusters.
-            3. For each cluster, increment votes for each pair of adjacent (connected) pixels
-               within that cluster.
-            4. Accumulate edge votes across all clusterings, then normalize by the number of
-               clustering maps.
-            5. Retain only those edges (pixel adjacencies) present in at least `min_consensus`
-               fraction of clusterings.
-            6. Construct an undirected sparse graph with surviving edges; run connected components
-               labeling.
-            7. Relabel clusters in order of descending size for interpretability; assign -1 to
-               isolated (noise) pixels.
-            8. Compute, for each pixel, the mean strength (consistency) of its incident consensus
-               edges.
-
-            Additional implementation details:
-
-            * Adjacency method depends on grid type:
-              - For lat/lon grids: K-nearest neighbors on sphere using geodesic distance
-                (controlled by `k_neighbors`, default 8). This uses coordinate-based spatial
-                relationships rather than grid indices.
-              - For non-geographic grids: Index-based 4- or 8-connectivity using grid array
-                structure (controlled by `neighbor_connectivity`). This is not K-nearest
-                neighbors—it connects cells based on their position in the 2D array (horizontal,
-                vertical, and optionally diagonal neighbors in grid index space).
-            * Consensus clusters represent regions whose internal edges are repeatedly co-clustered
-              across the inputs and may be chained via single-link paths.
-            * Large, non-compact clusters can form if consensus is too lenient; increase
-              `min_consensus` or apply additional filtering for tighter components if needed.
-            * Suitable for identifying robust tipping regions or domains unaffected by clustering noise.
-
-        Example:
-            >>> ds, summary_df = td.aggregate.cluster_consensus(
-            ...     cluster_vars=['clust_a', 'clust_b'], min_consensus=0.7
-            ... )
-            >>> ds.clusters.plot()  # Visualize consensus clusters
-            >>> summary_df.head()  # View cluster statistics
-
-        Raises:
-            ValueError: If neighbor_connectivity is not 4 or 8.
-            AssertionError: If no cluster_vars are found.
+            cluster_vars: Input clustering variables to include. If None, uses all
+                ``self.td.cluster_vars``.
+            min_consensus: Fraction in ``[0, 1]`` of inputs required per retained voxel after
+                dilation. Required; no default.
+            temporal_tolerance: Time-step radius for support dilation and cluster connectivity.
+                Required; ``0`` means exact-time support only.
+            spatial_tolerance: Grid-cell radius in ``y/x`` for support dilation and cluster
+                connectivity. Required; ``0`` means exact spatial support only.
+            stitch_meridian: ``False``, ``True``, or ``\"auto\"`` (default). ``\"auto\"`` enables
+                seam stitching when the grid spans nearly all longitudes.
+            show_progress: Show a progress bar while processing inputs. Default: True.
+            output_label_suffix: Suffix for the default label name ``cluster_consensus``.
+            output_label: Explicit consensus labels variable name. If None, uses
+                ``\"cluster_consensus\" + output_label_suffix``.
+            overwrite: Replace existing variables with the same names. If False, uniquify
+                names like :func:`toad.clustering.compute_clusters`.
+            min_cluster_area: Drop consensus clusters whose spatial footprint (cells at any
+                time) is strictly below this value; ids are re-sorted afterward. Default ``2``.
+                ``None`` disables the filter.
 
         See Also:
-            Evidence accumulation clustering (EAC) method from Fred & Jain (2005). This
-            implementation uses spatial adjacency instead of dense all-pairs co-association
-            for scalability.
+            :doc:`consensus_clustering` for a longer guide and :doc:`Consensus tutorial
+            <tutorials/consensus>` for a worked example.
+
+        Example:
+            >>> td.compute_consensus(
+            ...     cluster_vars=['var_dts_cluster', 'var_dts_cluster_1'],
+            ...     min_consensus=0.7,
+            ...     temporal_tolerance=5,
+            ...     spatial_tolerance=1,
+            ...     min_cluster_area=10,
+            ... )
+            >>> td.plot.consensus_overview()
+            >>> td.aggregate.consensus_summary().head()
+
+        Raises:
+            ValueError: If no cluster variables are found, a tolerance is negative,
+            ``min_consensus`` is outside ``[0, 1]``, or ``min_cluster_area`` is invalid.
+
         """
-        # Get list of cluster variables if not provided
+        # --- inputs and parameters ---
         if cluster_vars is None:
             cluster_vars = list(self.td.cluster_vars)
-        assert len(cluster_vars) > 0, "No cluster variables provided/found."
+        if len(cluster_vars) == 0:
+            raise ValueError("No cluster variables provided/found.")
 
-        # Check if neighbor connectivity is valid
-        if neighbor_connectivity not in (4, 8):
+        if temporal_tolerance < 0:
             raise ValueError(
-                f"`neighbor_connectivity` must be 4 or 8, but got {neighbor_connectivity}."
+                f"`temporal_tolerance` must be >= 0, got {temporal_tolerance}."
+            )
+        if spatial_tolerance < 0:
+            raise ValueError(
+                f"`spatial_tolerance` must be >= 0, got {spatial_tolerance}."
+            )
+        if not (0.0 <= min_consensus <= 1.0):
+            raise ValueError(f"`min_consensus` must be in [0, 1], got {min_consensus}.")
+        if min_cluster_area is not None and min_cluster_area < 0:
+            raise ValueError(
+                f"`min_cluster_area` must be >= 0 or None, got {min_cluster_area}."
             )
 
-        # Get dimensions from first clustering
+        # --- grid layout (meridian stitching for labelling / dilation on global lon grids) ---
+        spatial_dims = tuple(self.td.space_dims)
+        stitch_meridian_resolved = resolve_stitch_meridian(
+            stitch_meridian,
+            dataset=self.td.data,
+            spatial_dims=spatial_dims,
+        )
+        if stitch_meridian == "auto" and stitch_meridian_resolved:
+            self.td.logger.info(
+                "Meridian seam stitching enabled automatically (global longitude grid)."
+            )
+
+        # --- output variable names ---
+        new_output_label = (
+            output_label if output_label else f"cluster_consensus{output_label_suffix}"
+        )
+        if not overwrite:
+            new_output_label = get_unique_variable_name(
+                new_output_label, self.td.data, logger
+            )
+        else:
+            if new_output_label in self.td.data:
+                self.td.data = self.td.data.drop_vars(new_output_label)
+            rate_drop = f"{new_output_label}{_attrs.CONSENSUS_RATE_SUFFIX}"
+            if rate_drop in self.td.data:
+                self.td.data = self.td.data.drop_vars(rate_drop)
+
+        # --- member-support solver: dilated votes → threshold → connected components ---
         sample = self.td.data[cluster_vars[0]]
-        spatial_dims = self.td.space_dims
+        context = _build_grid_context(
+            sample,
+            spatial_dims=spatial_dims,
+            time_dim=self.td.time_dim,
+            stitch_meridian=stitch_meridian_resolved,
+        )
+        native_union, member_vote_count = _accumulate_member_support(
+            self.td,
+            cluster_vars=cluster_vars,
+            temporal_tolerance=temporal_tolerance,
+            spatial_tolerance=spatial_tolerance,
+            show_progress=show_progress,
+            context=context,
+        )
+        if not np.any(native_union):
+            ds_out = _empty_result(self.td, cluster_vars, context)
+        else:
+            ds_out = _build_member_support_dataset(
+                self.td,
+                cluster_vars=cluster_vars,
+                min_consensus=min_consensus,
+                temporal_tolerance=temporal_tolerance,
+                spatial_tolerance=spatial_tolerance,
+                context=context,
+                native_union=native_union,
+                member_vote_count=member_vote_count,
+            )
 
-        # Get array sizes
-        y_len = sample.sizes[spatial_dims[0]]
-        x_len = sample.sizes[spatial_dims[1]]
-
-        # Create flattened index array for 2D grid
-        N = y_len * x_len
-        flat_idx_2d = np.arange(N, dtype=np.int64).reshape((y_len, x_len))
-
-        # Store coordinates for output arrays (include 2D coords like latitude/longitude)
-        coords_spatial = {
-            name: coord
-            for name, coord in sample.coords.items()
-            if (len(coord.dims) > 0) and set(coord.dims).issubset(spatial_dims)
-        }
-        # Ensure the index coordinates for each spatial dim are present
-        for d in spatial_dims:
-            coords_spatial.setdefault(d, sample[d])
-
-        # Determine latitude/longitude names and grid type from dataset
-        lat_name, lon_name, has_latlon, is_latlon_dims = get_latlon_info(
-            self.td.data, self.td.space_dims
+        # --- optional size filter, TOAD attrs, merge into td.data ---
+        lab = _finalize_consensus_variables(
+            self.td,
+            ds_out=ds_out,
+            new_output_label=new_output_label,
+            cluster_vars=cluster_vars,
+            min_consensus=min_consensus,
+            temporal_tolerance=temporal_tolerance,
+            spatial_tolerance=spatial_tolerance,
+            stitch_meridian=stitch_meridian,
+            stitch_meridian_resolved=stitch_meridian_resolved,
+            min_cluster_area=min_cluster_area,
+            time_dim=self.td.time_dim,
         )
 
-        # Recast naming for readability
-        regrid_enabled = is_latlon_dims
+        logger.info(_format_consensus_summary(new_output_label, lab))
 
-        # Initialize variables that may be conditionally defined (for type checking)
-        lat: np.ndarray | None = None
-        knn_rows: np.ndarray | None = None
-        knn_cols: np.ndarray | None = None
-        hp_index_flat: np.ndarray | None = None
-        N_hp: int = 0
-        mask_hp: np.ndarray | None = None
-        valid_hp: np.ndarray | None = None
-        present_mask2d: np.ndarray | None = None
+    def consensus_summary(self, consensus_var: str | None = None) -> pd.DataFrame:
+        """Rebuild the per-cluster summary table from stored consensus label and rate arrays.
 
-        # use knn if dataset has lat/lon
-        # Note: regrid_enabled can only be True if has_latlon is True (since is_latlon_dims requires has_latlon)
-        if has_latlon:
-            lat = sample[lat_name].values
-            lon = sample[lon_name].values
-            # Type narrowing assertion: helps type checker understand lat/lon are arrays (not None) after assignment
-            assert lat is not None and lon is not None
+        Shift-time columns use strict same-``(time, y, x)`` agreement between consensus
+        and each input (see :func:`toad.utils.cluster_consensus_utils.consensus_shift_time_distribution`).
+        To plot full base-variable trajectories over a shared spatial region with a looser
+        time rule, use :meth:`consensus_cluster_timeseries` instead.
 
-            # if lat/lon are 1D, convert to 2D to keep consistent with 2D grids, i.e. irregular such as lat(i, j) and lon(i, j)
-            if lat.ndim == 1 and lon.ndim == 1:
-                lon, lat = np.meshgrid(lon, lat)
+        Args:
+            consensus_var: Name of the consensus labels variable (``variable_type=consensus_cluster``).
+                If None, infers the variable when exactly one consensus label exists on the dataset
+                (same resolution rules as :meth:`toad.core.TOAD._resolve_consensus_var`).
 
-            if regrid_enabled:
-                knn_rows, knn_cols, hp_index_flat = _build_knn_edges_from_regridder(
-                    lat, lon, k=k_neighbors, regridder=regridder
-                )
-                # Compute HealPix pixel count once for consistency
-                # Note: hp_index_flat should never be empty if regridding succeeded
-                N_hp = int(hp_index_flat.max()) + 1
+        Returns:
+            DataFrame with one row per consensus cluster. Includes ``mean_consensus_rate``,
+            spatial ``area`` and centroid columns, ``median_median_shift_time`` (median of
+            per-input spatial medians), related between-input std columns, and
+            ``pooled_median_shift_time`` / ``pooled_std_shift_time`` over all pooled event-time
+            samples; see :func:`toad.utils.cluster_consensus_utils._build_consensus_summary_df_spacetime`.
+        """
+        consensus_var = self.td._resolve_consensus_var(consensus_var)
+        rate_var = self.td._resolve_consensus_rate_var(consensus_var)
+        labels = self.td.data[consensus_var]
+        rate = self.td.data[rate_var]
+        spatial_dims = tuple(self.td.space_dims)
+        time_dim = self.td.time_dim
+        return _build_consensus_summary_df_spacetime(
+            self.td, labels, rate, spatial_dims, time_dim
+        )
+
+    def consensus_shift_time_distribution(
+        self,
+        da_clusters: xr.DataArray,
+        *,
+        spatial_dims: tuple[str, str] | None = None,
+        time_dim: str | None = None,
+    ) -> tuple[xr.Dataset, pd.DataFrame]:
+        """Export event-time samples behind the consensus summary shift columns.
+
+        Wraps :func:`toad.utils.cluster_consensus_utils.consensus_shift_time_distribution`.
+        Returns an ``xr.Dataset`` (per-cluster × ``cluster_var`` means/stds) and a long
+        ``DataFrame`` of per-cell transition times for histograms.
+
+        Args:
+            da_clusters: Consensus labels from :meth:`compute_consensus` / :meth:`TOAD.compute_consensus`.
+            spatial_dims: Defaults to ``self.td.space_dims``.
+            time_dim: Inferred from ``self.td.time_dim`` when present on ``da_clusters``.
+
+        Returns:
+            ``(xr.Dataset, pandas.DataFrame)`` — see the utility docstring.
+        """
+        return consensus_shift_time_distribution(
+            self.td,
+            da_clusters,
+            spatial_dims=spatial_dims,
+            time_dim=time_dim,
+        )
+
+    def consensus_shift_time_distributions(
+        self,
+        da_clusters: xr.DataArray,
+        *,
+        spatial_dims: tuple[str, str] | None = None,
+        time_dim: str | None = None,
+        distribution_result: tuple[xr.Dataset, pd.DataFrame] | None = None,
+        source_input_cluster_var: str | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Return transition-time samples grouped by consensus cluster id.
+
+        This is a plotting-friendly wrapper around
+        :meth:`consensus_shift_time_distribution`. It aggregates across all input
+        ``cluster_var`` values and returns ``{cluster_id: shift_times}``, which is
+        convenient for violin plots of consensus-cluster timing distributions.
+
+        Args:
+            da_clusters: Consensus labels from :meth:`compute_consensus` / :meth:`TOAD.compute_consensus`.
+            spatial_dims: Defaults to ``self.td.space_dims``.
+            time_dim: Inferred from ``self.td.time_dim`` when present on ``da_clusters``.
+            distribution_result: If provided, a prior ``(dataset, dataframe)`` tuple from
+                :meth:`consensus_shift_time_distribution` for the same inputs; recomputation
+                of the long table is skipped.
+            source_input_cluster_var: If set, use only long-form rows from this input
+                clustering (see :func:`toad.utils.cluster_consensus_utils.consensus_shift_time_distributions`).
+
+        Returns:
+            Mapping from consensus cluster id to a 1D array of transition times.
+            In spacetime mode the samples match the summary pipeline exactly, so the
+            same spatial cell may appear multiple times if it belongs to the same
+            consensus component at multiple timesteps.
+        """
+        return consensus_shift_time_distributions(
+            self.td,
+            da_clusters,
+            spatial_dims=spatial_dims,
+            time_dim=time_dim,
+            distribution_result=distribution_result,
+            source_input_cluster_var=source_input_cluster_var,
+        )
+
+    def label_shift_time_samples(
+        self,
+        label_data: str | xr.DataArray,
+        *,
+        spatial_dims: tuple[str, str] | None = None,
+        time_dim: str | None = None,
+    ) -> pd.DataFrame:
+        """Per-cell event times for a single 3D label field (non-consensus or any labels).
+
+        Wraps :func:`toad.utils.cluster_consensus_utils.label_field_shift_time_samples`.
+        Pass a variable name in ``self.td.data`` or a :class:`xarray.DataArray` of labels.
+        """
+        da = self.td.data[label_data] if isinstance(label_data, str) else label_data
+        return label_field_shift_time_samples(
+            self.td,
+            da,
+            spatial_dims=spatial_dims,
+            time_dim=time_dim,
+        )
+
+    def label_shift_time_distributions(
+        self,
+        label_data: str | xr.DataArray,
+        *,
+        spatial_dims: tuple[str, str] | None = None,
+        time_dim: str | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Transition-time samples per cluster id in one time-resolved label field.
+
+        For violin-style plots of a **normal** clustering, pass that cluster map’s
+        name. Same convention as the consensus long table (event time at each
+        labelled spacetime cell).
+
+        See :func:`toad.utils.cluster_consensus_utils.label_field_shift_time_distributions`.
+        """
+        da = self.td.data[label_data] if isinstance(label_data, str) else label_data
+        return label_field_shift_time_distributions(
+            self.td,
+            da,
+            spatial_dims=spatial_dims,
+            time_dim=time_dim,
+        )
+
+    def consensus_extraction_mask_2d(
+        self,
+        da_clusters: xr.DataArray,
+        consensus_cluster_id: int,
+        cluster_var: str,
+    ) -> xr.DataArray:
+        """2D boolean mask of grid cells used by :meth:`consensus_cluster_timeseries`.
+
+        A cell is True iff, at **some** timestep, the consensus label equals
+        ``consensus_cluster_id`` **and** the input ``cluster_var`` has a non-noise label
+        (``>= 0``). Those conditions need not hold at the **same** time — the mask is
+        collapsed with OR over time, then used to extract **full** time series on the
+        resulting spatial footprint.
+
+        This is looser than the support rule in :meth:`consensus_summary` /
+        :func:`~toad.utils.cluster_consensus_utils.consensus_shift_time_distribution`,
+        which require consensus and input to agree at the same ``(time, y, x)`` when
+        computing shift-time statistics.
+
+        Args:
+            da_clusters: Consensus label field.
+            consensus_cluster_id: Target consensus cluster id.
+            cluster_var: One input clustering variable name.
+
+        Returns:
+            DataArray of bool with dimensions ``self.td.space_dims``.
+        """
+        cluster_mask = da_clusters == consensus_cluster_id
+        time_dim = self.td.time_dim
+        has_time_dim = time_dim in da_clusters.dims
+        support_mask = _consensus_input_support_mask(
+            self.td,
+            da_clusters,
+            cluster_var,
+            spatial_dims=tuple(self.td.space_dims),
+            time_dim=time_dim if has_time_dim else None,
+        )
+        # OR over time: consensus and input need not agree at the same timestep
+        if has_time_dim:
+            return (cluster_mask & support_mask).any(dim=time_dim)
+        return cluster_mask & support_mask
+
+    def consensus_cluster_timeseries(
+        self,
+        da_clusters: xr.DataArray,
+        consensus_cluster_id: int,
+        *,
+        var: str | None = None,
+        cluster_vars: list[str] | None = None,
+        aggregation: Literal[
+            "raw", "mean", "sum", "std", "median", "percentile", "max", "min"
+        ]
+        | str = "raw",
+        percentile: float | None = None,
+        normalize: Literal["max", "max_each"] | str | None = None,
+        keep_full_timeseries: bool = True,
+    ) -> dict[str, xr.DataArray]:
+        """Extract per-input timeseries for one consensus cluster.
+
+        Uses :meth:`consensus_extraction_mask_2d` — a **spatial** footprint where consensus
+        and each input were active at least once (not necessarily at the same time), then
+        aggregates the base variable over those cells for the full time axis (see
+        ``keep_full_timeseries``). Convenient for overlaying trajectories from the same
+        region across inputs.
+
+        For *when* shifts occurred, use :meth:`consensus_summary` or
+        :meth:`consensus_shift_time_distribution` instead; those require consensus and
+        input labels at the same ``(time, y, x)`` voxel.
+
+        Args:
+            da_clusters: Consensus labels from :meth:`compute_consensus` / :meth:`TOAD.compute_consensus`.
+            consensus_cluster_id: Consensus cluster id to extract.
+            var: Optional base variable override used for all returned timeseries.
+                If omitted, each ``cluster_var`` is mapped to its own base variable.
+            cluster_vars: Optional subset of input clustering variables. Defaults to
+                ``da_clusters.attrs["cluster_vars"]`` when available, else ``self.td.cluster_vars``.
+            aggregation: Same as :meth:`toad.core.TOAD.get_timeseries`.
+            percentile: Required when ``aggregation="percentile"``.
+            normalize: Same as :meth:`toad.core.TOAD.get_timeseries`.
+            keep_full_timeseries: If ``False`` and ``da_clusters`` is time-resolved,
+                values outside the consensus cluster's overall start/end window are
+                masked out.
+
+        Returns:
+            Mapping ``{cluster_var: xr.DataArray}`` for input clusterings with a
+            non-empty footprint. Each series matches :meth:`toad.core.TOAD.get_timeseries`
+            for the chosen ``aggregation``.
+        """
+        if cluster_vars is None:
+            cluster_vars_attr = da_clusters.attrs.get("cluster_vars")
+            if cluster_vars_attr is not None:
+                cluster_vars = list(cluster_vars_attr)
             else:
-                knn_rows, knn_cols = _build_knn_edges_from_latlon(
-                    lat, lon, k=k_neighbors
+                cluster_vars = list(self.td.cluster_vars)
+        if len(cluster_vars) == 0:
+            raise ValueError("No cluster variables available for consensus timeseries.")
+
+        cluster_mask = da_clusters == consensus_cluster_id
+        if not bool(cluster_mask.any().item()):
+            present_ids = np.unique(da_clusters.values)
+            present_ids = present_ids[np.isfinite(present_ids) & (present_ids >= 0)]
+            raise ValueError(
+                f"Consensus cluster id {consensus_cluster_id} not found. "
+                f"Available ids: {present_ids.astype(int).tolist()}"
+            )
+
+        time_dim = self.td.time_dim
+        has_time_dim = time_dim in da_clusters.dims
+        time_window_mask: xr.DataArray | None = None
+        if has_time_dim and not keep_full_timeseries:
+            cluster_present_over_time = cluster_mask.any(dim=self.td.space_dims)
+            active_idx = np.flatnonzero(cluster_present_over_time.values)
+            if active_idx.size > 0:
+                in_window = np.zeros(da_clusters.sizes[time_dim], dtype=bool)
+                in_window[active_idx[0] : active_idx[-1] + 1] = True
+                time_window_mask = xr.DataArray(
+                    in_window,
+                    dims=[time_dim],
+                    coords={time_dim: da_clusters[time_dim]},
+                    name="consensus_time_window",
                 )
 
-            use_knn = True
-        else:
-            # Fallback to index-based adjacency
-            use_knn = False
-
-        # Collect per-map edges for numerator (votes) and denominator (availability)
-        rows_V, cols_V = [], []
-        rows_A, cols_A = [], []
-
-        # Preallocate reusable arrays (if using regridding)
-        if regrid_enabled:
-            assert N_hp > 0, "N_hp must be set when regrid_enabled is True"
-            assert hp_index_flat is not None, (
-                "hp_index_flat must be set when regrid_enabled is True"
+        out: dict[str, xr.DataArray] = {}
+        for cluster_var in cluster_vars:
+            mask_for_data = self.consensus_extraction_mask_2d(
+                da_clusters, consensus_cluster_id, cluster_var
             )
-            mask_hp = np.zeros(N_hp, dtype=bool)
-            valid_hp = np.ones(N_hp, dtype=bool)
-        else:
-            # Preallocate availability mask for non-regrid case (same shape every iteration)
-            present_mask2d = np.ones((y_len, x_len), dtype=bool)
-
-        # Process each clustering
-        for cvar in tqdm(cluster_vars, disable=not show_progress):
-            # Get cluster IDs, optionally filter to top N largest (shared logic)
-            unique_ids = self.td.get_cluster_ids(cvar)
-            if unique_ids.size == 0:
+            if not bool(mask_for_data.any().item()):
                 continue
-            if top_n_clusters is not None and top_n_clusters > 0:
-                unique_ids = unique_ids[:top_n_clusters]
 
-            if regrid_enabled:
-                assert mask_hp is not None, (
-                    "mask_hp must be set when regrid_enabled is True"
-                )
-                assert valid_hp is not None, (
-                    "valid_hp must be set when regrid_enabled is True"
-                )
-                assert hp_index_flat is not None, (
-                    "hp_index_flat must be set when regrid_enabled is True"
-                )
-                assert knn_rows is not None, (
-                    "knn_rows must be set when regrid_enabled is True"
-                )
-                assert knn_cols is not None, (
-                    "knn_cols must be set when regrid_enabled is True"
-                )
-                labels3d = self.td.data[cvar].values  # (T, Y, X)
-
-                # Build 2D mask: pixels in any of the selected clusters at any time
-                labels_2d = np.logical_or.reduce(
-                    [(labels3d == cid).any(axis=0) for cid in unique_ids]
-                )  # (Y,X), boolean
-
-                # Convert mask to HealPix indexing
-                # hp_index_flat maps original pixels → HealPix pixels
-                # Reuse preallocated mask, fill with False for this iteration
-                mask_hp.fill(False)
-                mask_hp[np.unique(hp_index_flat[labels_2d.ravel()])] = True
-
-                # Availability: all HP pixels valid (same every iteration)
-                rA, cA = _knn_edges_from_mask(valid_hp, knn_rows, knn_cols)
-                rows_A.extend(rA)
-                cols_A.extend(cA)
-
-                # Votes: both endpoints in footprint
-                rV, cV = _knn_edges_from_mask(mask_hp, knn_rows, knn_cols)
-                rows_V.extend(rV)
-                cols_V.extend(cV)
-            else:
-                labels = self.td.data[cvar].values  # (T, Y, X)
-
-                # Per-map deduplication of edges (votes)
-                map_edges_V: set[tuple[int, int]] = set()
-
-                # build adjacency edges for each cluster footprint (votes)
-                for cid in unique_ids:
-                    mask2d = (labels == cid).any(axis=0)  # (Y, X)
-
-                    if use_knn:
-                        assert knn_rows is not None, (
-                            "knn_rows must be set when use_knn is True"
-                        )
-                        assert knn_cols is not None, (
-                            "knn_cols must be set when use_knn is True"
-                        )
-                        # cluster footprint mask (reuse mask2d computation)
-                        mask_flat = mask2d.ravel()
-                        both_true = mask_flat[knn_rows] & mask_flat[knn_cols]
-                        for i, j in zip(knn_rows[both_true], knn_cols[both_true]):
-                            map_edges_V.add((int(i), int(j)))
-                    else:
-                        _add_adjacent_true_pairs(
-                            mask2d,
-                            map_edges_V,
-                            flat_idx_2d,
-                            neighbor_connectivity == 8,
-                        )
-
-                if map_edges_V:
-                    r, c = zip(*map_edges_V)
-                    rows_V.extend(r)
-                    cols_V.extend(c)
-
-                # Availability per map (all pixels valid → all adjacency edges)
-                # present_mask2d preallocated before loop since it's the same every iteration
-                if use_knn:
-                    assert present_mask2d is not None, (
-                        "present_mask2d must be set when not regrid_enabled"
+            base_var = var
+            if base_var is None:
+                base_var = self.td.data[cluster_var].attrs.get(_attrs.BASE_VARIABLE)
+                if base_var is None:
+                    raise ValueError(
+                        f"Cluster variable '{cluster_var}' has no BASE_VARIABLE attribute. "
+                        "Pass `var=...` explicitly."
                     )
-                    assert knn_rows is not None, (
-                        "knn_rows must be set when use_knn is True"
-                    )
-                    assert knn_cols is not None, (
-                        "knn_cols must be set when use_knn is True"
-                    )
-                    rA, cA = _knn_edges_from_mask(
-                        present_mask2d.ravel(), knn_rows, knn_cols
-                    )
-                else:
-                    assert present_mask2d is not None, (
-                        "present_mask2d must be set when not regrid_enabled"
-                    )
-                    rA, cA = _native_edges_from_mask(
-                        present_mask2d, flat_idx_2d, neighbor_connectivity == 8
-                    )
-                rows_A.extend(rA)
-                cols_A.extend(cA)
 
-        # If no edges found, return all cells as noise
-        if len(rows_V) == 0:
-            return _build_empty_consensus_summary_df(
-                self.td, y_len, x_len, coords_spatial, spatial_dims
+            data = self.td.data[base_var].where(mask_for_data)
+            if time_window_mask is not None:
+                data = data.where(time_window_mask)
+
+            series = self.td._finalize_timeseries(
+                data, aggregation, percentile, normalize
             )
-
-        # Build weighted consensus
-        if regrid_enabled:
-            assert N_hp > 0, "N_hp must be set when regrid_enabled is True"
-            shape = (N_hp, N_hp)
-        else:
-            shape = (N, N)
-        W = _compute_weighted_consensus(
-            rows_V, cols_V, rows_A, cols_A, shape, min_consensus
-        )
-
-        # If no edges remain after thresholding, return all noise
-        if W.nnz == 0:
-            return _build_empty_consensus_summary_df(
-                self.td, y_len, x_len, coords_spatial, spatial_dims
-            )
-
-        # Compute per-node average edge weight
-        node_sum = np.array(W.sum(axis=1)).ravel()
-        node_deg = np.array(W.count_nonzero(axis=1)).ravel().astype(np.float32)
-
-        if regrid_enabled:
-            assert hp_index_flat is not None, (
-                "hp_index_flat must be set when regrid_enabled is True"
-            )
-            assert lat is not None, "lat must be set when regrid_enabled is True"
-            consistency_hp = np.divide(
-                node_sum, node_deg, out=np.zeros_like(node_sum), where=node_deg > 0
-            )
-
-            # map back to original grid
-            consistency_orig = consistency_hp[hp_index_flat]  # shape: (N_orig,)
-            consistency = consistency_orig.reshape(lat.shape)  # shape: (Y, X)
-        else:
-            consistency = np.divide(
-                node_sum, node_deg, out=np.zeros_like(node_sum), where=node_deg > 0
-            ).reshape((y_len, x_len))
-
-        # Find connected components in thresholded graph
-        bin_adj = W.copy()
-        bin_adj.data[:] = 1.0
-        bin_adj = bin_adj.maximum(bin_adj.T)
-        _, labels_flat = connected_components(
-            bin_adj, directed=False, return_labels=True
-        )
-
-        # Reshape labels back to 2D and mark isolated points as noise
-        if regrid_enabled:
-            assert hp_index_flat is not None, (
-                "hp_index_flat must be set when regrid_enabled is True"
-            )
-            assert lat is not None, "lat must be set when regrid_enabled is True"
-            labels_flat_orig = labels_flat[hp_index_flat]  # shape (N,)
-            labels_2d = labels_flat_orig.reshape(lat.shape)  # restored (Y,X)
-            deg_hp = np.array(bin_adj.getnnz(axis=1))
-            deg_orig = deg_hp[hp_index_flat]
-            deg_2d = deg_orig.reshape(lat.shape)
-            labels_2d[deg_2d == 0] = -1
-        else:
-            labels_2d = labels_flat.reshape((y_len, x_len))
-            deg = np.array(bin_adj.getnnz(axis=1)).reshape((y_len, x_len))
-            labels_2d[deg == 0] = -1
-
-        # Sort cluster labels by size
-        labels_2d = sorted_cluster_labels(labels_2d.flatten()).reshape(labels_2d.shape)
-
-        # Create output DataArrays
-        da_consensus_labels = xr.DataArray(
-            labels_2d,
-            coords=coords_spatial,
-            dims=spatial_dims,
-            name="clusters",
-        )
-        da_consensus_labels.attrs.update(
-            {
-                "cluster_vars": cluster_vars,
-                "min_consensus": min_consensus,
-                "top_n_clusters": top_n_clusters,
-                "neighbor_connectivity": neighbor_connectivity,
-                "k_neighbors": k_neighbors,
-                "description": "Spatial consensus clusters (time-collapsed).",
-            }
-        )
-
-        da_consistency = xr.DataArray(
-            consistency,
-            coords=coords_spatial,
-            dims=spatial_dims,
-            name="consistency",
-        )
-
-        ds_out = xr.Dataset(
-            {
-                "clusters": da_consensus_labels,
-                "consistency": da_consistency,
-            }
-        )
-
-        summary_df = _build_consensus_summary_df(
-            self.td, da_consensus_labels, da_consistency, spatial_dims
-        )
-        return ds_out, summary_df
-
-
-def jaccard_similarity(set_a, set_b):
-    """
-    Compute Jaccard similarity between two sets: |A ∩ B| / |A ∪ B|
-
-    Args:
-        set_a, set_b: Input sets to compare
-
-    Returns:
-        float: Similarity score in [0,1]. 1.0 means identical sets,
-            0.0 means no overlap. Returns 1.0 if both sets are empty.
-    """
-    a = set(set_a)
-    b = set(set_b)
-    if not a and not b:
-        return 1.0
-    return len(a & b) / len(a | b)
-
-
-def precompute_spatial_memberships(td, cluster_vars):
-    """
-    Precompute flattened membership sets for each (cluster_var, cluster_id) pair.
-    For each cluster in each clustering, stores which grid cells were ever part of that cluster.
-
-    Args:
-        td: TOAD instance containing the cluster variables
-        cluster_vars: List of cluster variable names to process
-
-    Returns:
-        dict: Maps (cluster_var, cluster_id) tuples to sets of flattened grid cell indices.
-            Only includes non-noise clusters (cluster_id >= 0).
-    """
-    lookup = {}
-    for cvar in cluster_vars:
-        clusters = td.get_clusters(cvar)  # shape: (time, lat, lon)
-        cids = td.get_cluster_ids(cvar)
-
-        for cid in cids:
-            if cid < 0:  # Skip noise points (labeled as -1)
+            if not np.isfinite(np.asarray(series.values, dtype=float)).any():
                 continue
-            # Find grid cells that were ever part of this cluster
-            mask = (clusters == cid).any(dim=td.time_dim)
-            flat_idxs = np.flatnonzero(mask.values.flatten())
-            lookup[(cvar, cid)] = set(flat_idxs)
 
-    return lookup
+            series = series.copy()
+            series.name = f"{cluster_var}_consensus_cluster_{consensus_cluster_id}"
+            series.attrs.update(
+                {
+                    "consensus_cluster_id": int(consensus_cluster_id),
+                    "cluster_var": cluster_var,
+                    "base_var": base_var,
+                    "aggregation": aggregation,
+                    "keep_full_timeseries": keep_full_timeseries,
+                }
+            )
+            out[cluster_var] = series
+
+        if not out:
+            raise ValueError(
+                f"No input clusterings support consensus cluster id {consensus_cluster_id} "
+                "under the current extraction settings."
+            )
+        return out

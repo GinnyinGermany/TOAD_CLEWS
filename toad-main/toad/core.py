@@ -30,6 +30,7 @@ from toad.utils import (
 from toad.utils.repr_html import (
     build_variable_hierarchy,
     load_toad_logo_html,
+    render_consensus_variables_html,
     render_hierarchy_html,
 )
 
@@ -49,8 +50,6 @@ class _StatsAccessor:
             if var
             else str(self._td.get_clusters(self._td._get_base_var_if_none(None)).name)
         )
-        if self._td._is_shift_variable(var):
-            var = str(self._td.get_clusters(var).name)
         return postprocessing.Stats(self._td, var)
 
     @property
@@ -83,6 +82,10 @@ class TOAD:
         log_level: The logging level. Choose from 'DEBUG', 'INFO', 'WARNING', 'ERROR',
             'CRITICAL'. Defaults to 'INFO'.
         engine: The engine to use to open the netCDF file. Defaults to 'netcdf4'.
+        auto_clean: If True, run :func:`toad.preprocessing.clean_for_toad` after loading
+            data (drops bounds, auxiliary dims, orphan coords). Defaults to False.
+            Dimension names ``longitude``/``latitude`` are renamed to ``lon``/``lat`` first
+            so cleaning and :attr:`space_dims` see the standard names.
 
     Raises:
         ValueError: If the input file path does not exist or if data dimensions are not 3D.
@@ -97,6 +100,7 @@ class TOAD:
         time_dim: str = "time",
         log_level: str = "INFO",
         engine: str = "netcdf4",
+        auto_clean: bool = False,
     ):
         # load data from path if string
         if isinstance(data, str):
@@ -117,6 +121,17 @@ class TOAD:
         self.logger.propagate = False  # Prevent propagation to the root logger :: i.e. prevents dupliate messages
         self.set_log_level(log_level)
 
+        # Rename longitude and latitude to lon and lat
+        if "longitude" in self.data.dims:
+            self.data = self.data.rename({"longitude": "lon"})
+            self.logger.info("Renamed dimension longitude to lon")
+        if "latitude" in self.data.dims:
+            self.data = self.data.rename({"latitude": "lat"})
+            self.logger.info("Renamed dimension latitude to lat")
+
+        if auto_clean:
+            self.data = preprocessing.clean_for_toad(self.data, time_dim=time_dim)
+
         # Check that all variables have the same dimensions
         dims = [self.data[var].dims for var in self.data.data_vars]
         if len(set(dims)) > 1:
@@ -127,14 +142,6 @@ class TOAD:
                 "All variables must have the same dimensions. Consider dropping variables not needed in TOAD.\n"
                 f"Dimensions for each variable:\n{dims_info}"
             )
-
-        # rename longitude and latitude to lon and lat
-        if "longitude" in self.data.dims:
-            self.data = self.data.rename({"longitude": "lon"})
-            self.logger.info("Renamed longitude to lon")
-        if "latitude" in self.data.dims:
-            self.data = self.data.rename({"latitude": "lat"})
-            self.logger.info("Renamed latitude to lat")
 
         lat, lon = detect_latlon_names(self.data)
         if (lat and lat not in self.data.dims) and (lon and lon not in self.data.dims):
@@ -202,12 +209,16 @@ class TOAD:
             self.base_vars, self.shift_vars, self.cluster_vars, self.data
         )
         variable_table = render_hierarchy_html(hierarchy, self.data)
+        consensus_table = render_consensus_variables_html(
+            self.data, self.consensus_cluster_vars
+        )
         logo_html = load_toad_logo_html()
         ds_repr = self.data._repr_html_()
         return f"""
         <div style='padding: 12px'>
             <h2 style='margin-bottom: 0px; display: flex; align-items: center;'>{logo_html}TOAD Object</h2>
             {variable_table}
+            {consensus_table}
             <p style='font-size: 0.9em; margin: 16px 0;'>Hint: to access the xr.dataset call <code>td.data</code></p>
             {ds_repr}
         </div>
@@ -343,7 +354,9 @@ class TOAD:
     def compute_clusters(
         self,
         var: str | None = None,
-        method: ClusterMixin | type = sklearn.cluster.HDBSCAN(),
+        method: ClusterMixin | type = sklearn.cluster.HDBSCAN(
+            allow_single_cluster=True
+        ),
         shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
         shift_direction: Literal["both", "positive", "negative"] | str = "both",
         shift_selection: Literal["local", "global", "all"] | str = "local",
@@ -443,6 +456,60 @@ class TOAD:
             optimize_progress_bar=optimize_progress_bar,
         )
 
+    def compute_consensus(
+        self,
+        cluster_vars: list[str] | None = None,
+        *,
+        min_consensus: float,
+        temporal_tolerance: int,
+        spatial_tolerance: int,
+        stitch_meridian: bool | Literal["auto"] = "auto",
+        show_progress: bool = True,
+        output_label_suffix: str = "",
+        output_label: str | None = None,
+        overwrite: bool = False,
+        min_cluster_area: int | None = 2,
+    ) -> None:
+        """Combine multiple clustering results into one per-voxel member-support consensus.
+
+        This delegates to :meth:`toad.postprocessing.Aggregation.compute_consensus`; see that
+        docstring for parameters and algorithm details.
+
+        Args:
+            cluster_vars: Input clustering variables to merge. Defaults to all ``td.cluster_vars``.
+            min_consensus: Minimum fraction of input clusterings that must support each retained
+                native event voxel after tolerance dilation (required).
+            temporal_tolerance: Time tolerance used for support dilation and component labelling
+                (required).
+            spatial_tolerance: Spatial tolerance used for support dilation and component labelling
+                (required).
+            stitch_meridian: Whether to connect the first and last longitude column on native
+                grids. ``\"auto\"`` (default) stitches when the grid spans nearly all
+                longitudes; ``False`` disables stitching; ``True`` forces it.
+            show_progress: Whether to show a progress bar.
+            output_label_suffix: Suffix for the default ``cluster_consensus`` label name.
+            output_label: Explicit name for the consensus labels variable.
+            overwrite: If True, replace an existing variable with the same name; if False,
+                append ``_1``, ``_2``, … when the name is taken.
+            min_cluster_area: Minimum spatial footprint (distinct cells ever labelled) for a
+                consensus cluster to be kept; smaller clusters become noise. Default ``2`` (see
+                :meth:`toad.postprocessing.Aggregation.compute_consensus`). Use ``None`` to
+                disable this post-filter.
+        """
+
+        self.aggregate.compute_consensus(
+            cluster_vars=cluster_vars,
+            min_consensus=min_consensus,
+            stitch_meridian=stitch_meridian,
+            show_progress=show_progress,
+            temporal_tolerance=temporal_tolerance,
+            spatial_tolerance=spatial_tolerance,
+            output_label_suffix=output_label_suffix,
+            output_label=output_label,
+            overwrite=overwrite,
+            min_cluster_area=min_cluster_area,
+        )
+
     # # ======================================================================
     # #               netCDF functions
     # # ======================================================================
@@ -532,16 +599,21 @@ class TOAD:
         Base variables are those that have not been derived from shift detection or
             clustering. A variable is considered a base variable if either:
                 1. It has no 'variable_type' attribute, or
-                2. Its 'variable_type' is neither 'shift' nor 'cluster'
+                2. Its 'variable_type' is neither 'shift', 'cluster', nor consensus-derived
 
         Returns:
             A list of strings containing the base variable names in the dataset.
         """
+        _derived = (
+            _attrs.TYPE_SHIFT,
+            _attrs.TYPE_CLUSTER,
+            _attrs.TYPE_CONSENSUS_CLUSTER,
+            _attrs.TYPE_CONSENSUS_RATE,
+        )
         return [
             str(x)
             for x in list(self.data.data_vars.keys())
-            if self.data[x].attrs.get(_attrs.VARIABLE_TYPE)
-            not in [_attrs.TYPE_SHIFT, _attrs.TYPE_CLUSTER]
+            if self.data[x].attrs.get(_attrs.VARIABLE_TYPE) not in _derived
         ]
 
     @property
@@ -576,6 +648,63 @@ class TOAD:
             for x in list(self.data.data_vars.keys())
             if self._is_cluster_variable(x)
         ]
+
+    @property
+    def consensus_cluster_vars(self) -> list[str]:
+        """Names of consensus label variables (``variable_type=consensus_cluster``)."""
+        return [
+            str(x)
+            for x in list(self.data.data_vars.keys())
+            if self.data[x].attrs.get(_attrs.VARIABLE_TYPE)
+            == _attrs.TYPE_CONSENSUS_CLUSTER
+        ]
+
+    def _resolve_consensus_var(self, consensus_var: str | None) -> str:
+        """Return the consensus labels variable name, or raise if ambiguous.
+
+        If ``consensus_var`` is None, requires exactly one consensus label variable in
+        :attr:`consensus_cluster_vars` (similar to how :meth:`get_clusters` resolves a
+        single cluster variable for a base ``var``).
+        """
+        if consensus_var is not None:
+            if consensus_var not in self.data:
+                raise ValueError(f"Unknown data variable: {consensus_var!r}")
+            if not self._is_consensus_cluster_variable(consensus_var):
+                raise ValueError(
+                    f"{consensus_var!r} is not a consensus label variable "
+                    f"(expected attrs['{_attrs.VARIABLE_TYPE}'] == {_attrs.TYPE_CONSENSUS_CLUSTER!r})."
+                )
+            return consensus_var
+        names = self.consensus_cluster_vars
+        if len(names) == 0:
+            raise ValueError(
+                "No consensus variables in the dataset. Run compute_consensus() first or pass "
+                "consensus_var=..."
+            )
+        if len(names) > 1:
+            raise ValueError(
+                f"Multiple consensus variables {names}. Pass consensus_var explicitly."
+            )
+        return names[0]
+
+    @staticmethod
+    def consensus_rate_var_name(consensus_var: str) -> str:
+        """Companion variable name for member-support fractions (``{consensus_var}_rate``)."""
+        return f"{consensus_var}{_attrs.CONSENSUS_RATE_SUFFIX}"
+
+    def _resolve_consensus_rate_var(self, consensus_var: str) -> str:
+        """Return the rate companion variable for a consensus labels variable name."""
+        name = self.consensus_rate_var_name(consensus_var)
+        if name not in self.data:
+            raise ValueError(
+                f"No matching consensus rate variable {name!r} for {consensus_var!r}."
+            )
+        if not self._is_consensus_rate_variable(name):
+            raise ValueError(
+                f"{name!r} is not a consensus rate variable "
+                f"(expected attrs['{_attrs.VARIABLE_TYPE}'] == {_attrs.TYPE_CONSENSUS_RATE!r})."
+            )
+        return name
 
     def remove_cluster(self, cluster_id: int, var: str | None = None):
         """Remove a cluster from the dataset.
@@ -742,6 +871,22 @@ class TOAD:
         underlying data object.
         """
         self.data = self.data.drop_vars(self.shift_vars)
+
+    def drop_consensus_clusters(self):
+        """
+        Remove all consensus outputs from the dataset.
+
+        Drops every variable with ``variable_type`` consensus label or consensus
+        rate (labels and their ``*_rate`` companions).
+        """
+        to_drop = [
+            str(x)
+            for x in self.data.data_vars
+            if self.data[x].attrs.get(_attrs.VARIABLE_TYPE)
+            in (_attrs.TYPE_CONSENSUS_CLUSTER, _attrs.TYPE_CONSENSUS_RATE)
+        ]
+        if to_drop:
+            self.data = self.data.drop_vars(to_drop)
 
     def shift_vars_for_var(self, var: str) -> list[str]:
         """Get the shift variables for a given variable.
@@ -926,6 +1071,35 @@ class TOAD:
 
         return dict(sorted(counts.items(), key=lambda x: x[1], reverse=True))
 
+    def cluster_summary(
+        self,
+        var: str | None = None,
+        cluster_ids: int | list[int] | range | None = None,
+        *,
+        extended: bool = False,
+        shift_threshold: float = DEFAULT_SHIFT_THRESHOLD,
+        exclude_noise: bool = True,
+    ):
+        """Per-cluster overview table for a clustering result.
+
+        Convenience alias for :meth:`Stats.cluster_summary`. See that method for
+        column definitions and examples.
+
+        Args:
+            var: Base variable, cluster variable, or None to infer when unambiguous.
+            cluster_ids: Subset of clusters to include. Defaults to all non-noise clusters.
+            extended: Include IQR bounds, shift amplitudes, pooled transition times,
+                and clustering metadata.
+            shift_threshold: Minimum shift magnitude for pooled transition-time columns.
+            exclude_noise: Exclude noise (cluster ID -1) when ``cluster_ids`` is None.
+        """
+        return self.stats(var).cluster_summary(
+            cluster_ids=cluster_ids,
+            extended=extended,
+            shift_threshold=shift_threshold,
+            exclude_noise=exclude_noise,
+        )
+
     def get_cluster_ids(
         self, var: str | None = None, exclude_noise: bool = True
     ) -> np.ndarray:
@@ -1075,11 +1249,26 @@ class TOAD:
         """Check if a variable is a cluster variable."""
         return self.data[var].attrs.get(_attrs.VARIABLE_TYPE) == _attrs.TYPE_CLUSTER
 
+    def _is_consensus_cluster_variable(self, var: str) -> bool:
+        """Check if a variable is a consensus cluster label variable."""
+        return (
+            self.data[var].attrs.get(_attrs.VARIABLE_TYPE)
+            == _attrs.TYPE_CONSENSUS_CLUSTER
+        )
+
+    def _is_consensus_rate_variable(self, var: str) -> bool:
+        """Check if a variable is a consensus rate companion variable."""
+        return (
+            self.data[var].attrs.get(_attrs.VARIABLE_TYPE) == _attrs.TYPE_CONSENSUS_RATE
+        )
+
     def _is_base_variable(self, var: str) -> bool:
         """Check if a variable is a base variable."""
         return self.data[var].attrs.get(_attrs.VARIABLE_TYPE) not in [
             _attrs.TYPE_SHIFT,
             _attrs.TYPE_CLUSTER,
+            _attrs.TYPE_CONSENSUS_CLUSTER,
+            _attrs.TYPE_CONSENSUS_RATE,
         ]
 
     def _aggregate_spatial(
@@ -1140,6 +1329,45 @@ class TOAD:
                 return result.dropna(dim="cell_xy", how="all")
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
+
+    def _finalize_timeseries(
+        self,
+        data: xr.DataArray,
+        aggregation: str,
+        percentile: Optional[float],
+        normalize: Optional[str],
+    ) -> xr.DataArray:
+        """Aggregate spatially, normalising per-cell trajectories first when needed.
+
+        For ``normalize`` with statistical aggregations (median, min, max, etc.),
+        normalisation must happen on raw cell trajectories before aggregation so that
+        band plots (min/max, percentiles) share a consistent scale with the median.
+        """
+        if normalize and aggregation != "raw":
+            raw = self._aggregate_spatial(data, "raw", percentile)
+            if normalize == "max":
+                norm_val = float(raw.max())
+            elif normalize == "max_each":
+                norm_val = raw.max(dim=self.time_dim)
+            else:
+                raise ValueError(f"Unknown normalization method: {normalize}")
+            raw = self._normalize_timeseries(raw, norm_val, normalize)
+            return self._aggregate_spatial(raw, aggregation, percentile)
+
+        data = self._aggregate_spatial(data, aggregation, percentile)
+        if normalize:
+            if normalize == "max":
+                data = self._normalize_timeseries(data, float(data.max()), normalize)
+            elif normalize == "max_each":
+                norm_val = (
+                    data.max(dim=self.time_dim)
+                    if "cell_xy" in data.dims
+                    else float(data.max())
+                )
+                data = self._normalize_timeseries(data, norm_val, normalize)
+            else:
+                raise ValueError(f"Unknown normalization method: {normalize}")
+        return data
 
     def _normalize_timeseries(
         self,
@@ -1266,22 +1494,8 @@ class TOAD:
                     xr.DataArray(mask_in_range, dims=self.time_dim, name="time_mask")
                 )
 
-        # First aggregate spatially
-        data = self._aggregate_spatial(data, aggregation, percentile)
-
-        # Normalise
-        if normalize:
-            if normalize == "max":
-                data = self._normalize_timeseries(data, float(data.max()), normalize)
-            elif normalize == "max_each":
-                norm_val = (
-                    data.max(dim=self.time_dim)
-                    if "cell_xy" in data.dims
-                    else float(data.max())
-                )
-                data = self._normalize_timeseries(data, norm_val, normalize)
-            else:
-                raise ValueError(f"Unknown normalization method: {normalize}")
+        # Aggregate (and normalise) spatially
+        data = self._finalize_timeseries(data, aggregation, percentile, normalize)
 
         return data
 
