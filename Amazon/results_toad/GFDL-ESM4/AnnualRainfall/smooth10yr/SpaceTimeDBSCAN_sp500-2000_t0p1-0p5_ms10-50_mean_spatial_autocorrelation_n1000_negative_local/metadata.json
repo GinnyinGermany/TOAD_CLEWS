@@ -2,6 +2,8 @@
     "model": "GFDL-ESM4",
     "variable": "AnnualRainfall",
     "rolling_years": 10,
+    "shift_method_name": "ASDETECT()",
+    "cluster_method_name": "SpaceTimeDBSCAN",
     "method": "SpaceTimeDBSCAN",
     "shift_direction": "negative",
     "shift_selection": "local",

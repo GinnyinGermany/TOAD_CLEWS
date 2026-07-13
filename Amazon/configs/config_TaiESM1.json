@@ -1,0 +1,123 @@
+{
+    "model": "TaiESM1",
+    "variable_settings": {
+        "cVeg": {
+            "preprocessing": {
+                "type": "simple",
+                "time_frequency": "1YS",
+                "aggregation": "mean",
+                "unit_conversion": "none",
+                "rolling_years": 1
+            },
+            "plot": {
+                "color": "forestgreen",
+                "ylabel": "Mean Vegetation Carbon ($kgC/m^2$)",
+                "cmap": "YlGn",
+                "label": "Vegetation Carbon ($kgC/m^2$)"
+            },
+            "toad": {
+                "shift":{
+                     "shift_method": "ASDETECT()",
+                     "shift_direction": "negative",
+                     "cluster_method": "SpaceTimeDBSCAN",
+                     "shift_selection": "local" },
+                "optimize":{
+                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_params": {
+                    "spatial_eps": [500.0,2000.0],
+                    "temporal_eps": [0.1,0.5],
+                    "min_samples": [10,50] },
+                    "optimize_n_trials": 1000}
+            }
+        },
+        "MCWD": {
+            "preprocessing": {
+                "type": "custom",
+                "formula_id": "MCWD_hydrological_year",
+                "inputs": ["pr", "evspsbl"],
+                "time_frequency": "1YS",
+                "unit_conversion": "flux_to_monthly_mm",
+                "rolling_years": 10
+            },
+            "plot": {
+                "color": "darkred",
+                "ylabel": "Mean Max Cumulative Water Deficit ($mm$)",
+                "cmap": "OrRd",
+                "label": "Max Cumulative Water Deficit ($mm$)"
+            },
+            "toad": {
+                "shift":{
+                     "shift_method": "ASDETECT()",
+                     "shift_direction": "negative",
+                     "cluster_method": "SpaceTimeDBSCAN",
+                     "shift_selection": "local" },
+                "optimize":{
+                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_params": {
+                    "spatial_eps": [500.0,2000.0],
+                    "temporal_eps": [0.1,0.5],
+                    "min_samples": [10,50] },
+                    "optimize_n_trials": 1000}
+            }
+        },
+        "fFire": {
+            "preprocessing": {
+                "type": "simple",
+                "time_frequency": "1YS",
+                "aggregation": "sum",
+                "unit_conversion": "flux_to_annual_total",
+                "rolling_years": 10
+                
+            },
+            "plot": {
+                "color": "firebrick",
+                "ylabel": "Mean Fire CO$_2$ Emission Flux ($kgC/m^2/s$)",
+                "cmap": "Reds",
+                "label": "Fire CO$_2$ Emission ($kgC/m^2/s$)"
+            },
+            "toad": {
+                "shift":{
+                     "shift_method": "ASDETECT()",
+                     "shift_direction": "positive",
+                     "cluster_method": "SpaceTimeDBSCAN",
+                     "shift_selection": "local" },
+                "optimize":{
+                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_params": {
+                    "spatial_eps": [500.0,2000.0],
+                    "temporal_eps": [0.1,0.5],
+                    "min_samples": [10,50] },
+                    "optimize_n_trials": 1000}
+            }
+        },
+        "AnnualRainfall": {
+            "preprocessing": {
+                "type": "simple",
+                "time_frequency": "1YS",
+                "aggregation": "sum",
+                "unit_conversion": "flux_to_annual_total",
+                "rolling_years": 10
+            },
+            "plot": {
+                "color": "royalblue",
+                "ylabel": "Mean Annual Rainfall ($mm$)",
+                "cmap": "Blues",
+                "label": "Annual Rainfall ($mm$)"
+            },
+            "toad": {
+                "shift":{
+                     "shift_method": "ASDETECT()",
+                     "shift_direction": "negative",
+                     "cluster_method": "SpaceTimeDBSCAN",
+                     "shift_selection": "local" },
+                "optimize":{
+                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_params": {
+                    "spatial_eps": [500.0,2000.0],
+                    "temporal_eps": [0.1,0.5],
+                    "min_samples": [10,50] },
+                    "optimize_n_trials": 1000}
+            }
+        }
+    }
+}
