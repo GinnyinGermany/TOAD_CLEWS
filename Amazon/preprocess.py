@@ -137,10 +137,10 @@ class PipelineConfig:
 
         # Hardcoding built-in paths
         self.base_path = os.path.join(PROJECT_ROOT, "CMIP6 data")
-        self.shapefile_path = os.path.join(PROJECT_ROOT, "data/AmazonBasinLimits-master/amazon_sensulatissimo_gmm_v1.shp")
+        self.shapefile_path = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
 
 
-        # Default spatial bounding box for Amazon basin
+        # Default spatial bounding box for Amazon biome
         self.lat_min = -20
         self.lat_max = 10
         self.lon_min = 280
@@ -612,6 +612,10 @@ class SpatialMasker:
 
     def apply_mask(self, data_array):
         amazon_boundary = gpd.read_file(self.shapefile_path)
+
+        # Filter to Amazon biome only (bioma == "Amazonía")
+        amazon_boundary = amazon_boundary[amazon_boundary['bioma'] == 'Amazonía']
+
         if amazon_boundary.crs is not None and amazon_boundary.crs.to_string() != "EPSG:4326":
             amazon_boundary = amazon_boundary.to_crs(epsg=4326)
         amazon_single_basin = amazon_boundary.unary_union
@@ -966,8 +970,12 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
     v_max = float(data_array.max(skipna=True))
 
     # Built-in shapefile path (using PROJECT_ROOT for dynamic path resolution)
-    shapefile_path = os.path.join(PROJECT_ROOT, "data", "AmazonBasinLimits-master", "amazon_sensulatissimo_gmm_v1.shp")
+    shapefile_path = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
     amazon_boundary = gpd.read_file(shapefile_path)
+
+    # Filter to Amazon biome only (bioma == "Amazonía")
+    amazon_boundary = amazon_boundary[amazon_boundary['bioma'] == 'Amazonía']
+
     if amazon_boundary.crs is not None and amazon_boundary.crs.to_string() != "EPSG:4326":
         amazon_boundary = amazon_boundary.to_crs(epsg=4326)
 
