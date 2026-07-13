@@ -55,13 +55,18 @@ import xarray as xr
 import preprocess
 
 # ------------------------------------------------------------------
+# Script location and project root (for dynamic path resolution)
+# ------------------------------------------------------------------
+TOAD_RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(TOAD_RUNNER_DIR)
+
+# ------------------------------------------------------------------
 # TOAD package import
 # ------------------------------------------------------------------
 def _ensure_toad_on_path():
     """Add the toad-main directory (sibling of this project's parent dir) to
     sys.path, matching the original notebook's path setup."""
-    parent_dir = os.path.abspath(os.path.join(os.getcwd(), ".."))
-    toad_main_path = os.path.join(parent_dir, "toad-main")
+    toad_main_path = os.path.join(PROJECT_ROOT, "toad-main")
     if toad_main_path not in sys.path:
         sys.path.append(toad_main_path)
 
@@ -70,7 +75,7 @@ _ensure_toad_on_path()
 
 from toad import TOAD  # noqa: E402
 from toad.shifts import ASDETECT  # noqa: E402
-from toad.clustering.methods import SpaceTimeDBSCAN  # noqa: E402
+from toad.clustering.methods.space_time_dbscan import SpaceTimeDBSCAN  # noqa: E402
 
 
 # ------------------------------------------------------------------
@@ -139,7 +144,7 @@ DEFAULT_OPTIMIZE_OBJECTIVE = "mean_spatial_autocorrelation"
 DEFAULT_OPTIMIZE_DIRECTION = "maximize"
 DEFAULT_OPTIMIZE_N_TRIALS = 1000
 
-RESULTS_DIR = Path("results_toad")
+RESULTS_DIR = Path(os.path.join(TOAD_RUNNER_DIR, "results_toad"))
 
 
 # ------------------------------------------------------------------
@@ -328,11 +333,12 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
-    # 3. Timeseries
+    # 3. Timeseries - one plot per cluster
     if len(selected_cluster_ids) > 0:
-        td.plot.timeseries(var=cluster_variable, cluster_ids=selected_cluster_ids)
-        plt.savefig(plot_dir / "03_timeseries.png", dpi=300, bbox_inches="tight")
-        plt.close()
+        for cluster_id in selected_cluster_ids:
+            td.plot.timeseries(var=cluster_variable, cluster_ids=[cluster_id])
+            plt.savefig(plot_dir / f"03_timeseries_cluster_{cluster_id}.png", dpi=300, bbox_inches="tight")
+            plt.close()
     else:
         print("[Warning] No valid cluster IDs found for timeseries plot.")
 

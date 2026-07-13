@@ -1,6 +1,6 @@
 *.nc
 !Amazon/processed_data/*.nc
 !*.png
-paper/
 .DS_Store
 !**/.gitkeep
+Amazon/trash/

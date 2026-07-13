@@ -1,0 +1,43 @@
+{
+    "model": "TaiESM1",
+    "variable": "MCWD",
+    "rolling_years": 10,
+    "shift_method_name": "ASDETECT()",
+    "cluster_method_name": "SpaceTimeDBSCAN",
+    "method": "SpaceTimeDBSCAN",
+    "shift_direction": "negative",
+    "shift_selection": "local",
+    "optimize": true,
+    "optimize_params": {
+        "spatial_eps": [
+            500.0,
+            2000.0
+        ],
+        "temporal_eps": [
+            0.1,
+            0.5
+        ],
+        "min_samples": [
+            10,
+            50
+        ]
+    },
+    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_direction": "maximize",
+    "optimize_n_trials": 1000,
+    "run_name": "TaiESM1/MCWD/smooth10yr/SpaceTimeDBSCAN_sp500-2000_t0p1-0p5_ms10-50_mean_spatial_autocorrelation_n1000_negative_local",
+    "best_trial": 63,
+    "best_score": 0.4094,
+    "best_spatial_eps": 981.1678937810915,
+    "best_temporal_eps": 0.11331227642542166,
+    "best_min_samples": 11,
+    "cluster_variable": "MCWD_dts_cluster",
+    "n_clusters_from_log": 1,
+    "n_clustered_points": 36,
+    "noise_percent": 66.7,
+    "n_noise_points": 24,
+    "n_clusters": 1,
+    "cluster_ids": [
+        0
+    ]
+}

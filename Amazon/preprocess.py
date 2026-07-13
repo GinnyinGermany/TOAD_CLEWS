@@ -13,12 +13,18 @@ from scipy import ndimage
 warnings.filterwarnings("ignore")
 
 # ==========================================
+# Project root directory (handles relative paths correctly)
+# ==========================================
+PREPROCESS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(PREPROCESS_DIR)
+
+# ==========================================
 # Phase 0: JSON Config Loader
 # ==========================================
 # All per-variable behaviour (preprocessing type/aggregation/unit_conversion,
 # plot styling, TOAD shift/optimize settings) is driven by this JSON file
 # instead of being hardcoded in the pipeline classes below.
-DEFAULT_CONFIG_PATH = "./config.json"
+DEFAULT_CONFIG_PATH = os.path.join(PREPROCESS_DIR, "config.json")
 
 # Frequency directory CMIP6 uses per raw variable. Extend this as new raw
 # variables are added to the JSON's "inputs"/target list.
@@ -130,8 +136,9 @@ class PipelineConfig:
         self.toad_config = self.variable_config.get("toad", {})
 
         # Hardcoding built-in paths
-        self.base_path = "../CMIP6 data"
-        self.shapefile_path = "../data/AmazonBasinLimits-master/amazon_sensulatissimo_gmm_v1.shp"
+        self.base_path = os.path.join(PROJECT_ROOT, "CMIP6 data")
+        self.shapefile_path = os.path.join(PROJECT_ROOT, "data/AmazonBasinLimits-master/amazon_sensulatissimo_gmm_v1.shp")
+
 
         # Default spatial bounding box for Amazon basin
         self.lat_min = -20
@@ -654,7 +661,7 @@ class TOADExporter:
         vars_to_drop = [var for var in final_ds.data_vars if var != self.variable]
         final_ds = final_ds.drop_vars(vars_to_drop)
 
-        output_dir = "./processed_data"
+        output_dir = os.path.join(PREPROCESS_DIR, "processed_data", self.model)
         os.makedirs(output_dir, exist_ok=True)
         suffix = smoothing_suffix(rolling_years)
         output_filename = f"TOAD_{self.variable}_{self.model}{suffix}.nc"
@@ -796,7 +803,7 @@ def plot_trend_from_nc(model_name, target_variable, rolling_years=None, config_p
         rolling_years = var_cfg.get("preprocessing", {}).get("rolling_years")
 
     suffix = smoothing_suffix(rolling_years)
-    file_path = f"./processed_data/TOAD_{target_variable}_{model_name}{suffix}.nc"
+    file_path = os.path.join(PREPROCESS_DIR, "processed_data", model_name, f"TOAD_{target_variable}_{model_name}{suffix}.nc")
     if not os.path.exists(file_path):
         print(f"[Error] File not found: {file_path}")
         return
@@ -831,7 +838,7 @@ def plot_trend_from_nc(model_name, target_variable, rolling_years=None, config_p
     plt.legend()
     plt.tight_layout()
 
-    output_dir = "./plots"
+    output_dir = os.path.join(PREPROCESS_DIR, "plots", model_name)
     os.makedirs(output_dir, exist_ok=True)
     output_filename = f"TrendPlot_{target_variable}_{model_name}{suffix}.png"
     output_path = os.path.join(output_dir, output_filename)
@@ -902,7 +909,7 @@ def plot_gwl_by_model_year(model_name, config_path=DEFAULT_CONFIG_PATH):
     plt.legend()
     plt.tight_layout()
 
-    output_dir = "./plots"
+    output_dir = os.path.join(PREPROCESS_DIR, "plots", model_name)
     os.makedirs(output_dir, exist_ok=True)
 
     output_path = os.path.join(
@@ -943,7 +950,7 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
         rolling_years = var_cfg.get("preprocessing", {}).get("rolling_years")
 
     suffix = smoothing_suffix(rolling_years)
-    file_path = f"./processed_data/TOAD_{target_variable}_{model_name}{suffix}.nc"
+    file_path = os.path.join(PREPROCESS_DIR, "processed_data", model_name, f"TOAD_{target_variable}_{model_name}{suffix}.nc")
     if not os.path.exists(file_path):
         print(f"[Error] File not found: {file_path}")
         return
@@ -958,8 +965,8 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
     v_min = float(data_array.min(skipna=True))
     v_max = float(data_array.max(skipna=True))
 
-    # Built-in shapefile path
-    shapefile_path = "../data/AmazonBasinLimits-master/amazon_sensulatissimo_gmm_v1.shp"
+    # Built-in shapefile path (using PROJECT_ROOT for dynamic path resolution)
+    shapefile_path = os.path.join(PROJECT_ROOT, "data", "AmazonBasinLimits-master", "amazon_sensulatissimo_gmm_v1.shp")
     amazon_boundary = gpd.read_file(shapefile_path)
     if amazon_boundary.crs is not None and amazon_boundary.crs.to_string() != "EPSG:4326":
         amazon_boundary = amazon_boundary.to_crs(epsg=4326)
@@ -1003,7 +1010,7 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
         y=1.05,
     )
 
-    output_dir = "./plots"
+    output_dir = os.path.join(PREPROCESS_DIR, "plots", model_name)
     os.makedirs(output_dir, exist_ok=True)
     output_filename = f"SpatialMap_{target_variable}_{model_name}{suffix}.png"
     output_path = os.path.join(output_dir, output_filename)
