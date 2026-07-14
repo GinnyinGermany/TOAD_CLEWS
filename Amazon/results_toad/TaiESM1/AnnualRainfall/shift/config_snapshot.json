@@ -1,0 +1,8 @@
+{
+    "model": "TaiESM1",
+    "variable": "AnnualRainfall",
+    "shift_method": "ASDETECT",
+    "shift_params": {},
+    "shift_direction": "negative",
+    "shift_selection": "local"
+}
