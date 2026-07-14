@@ -32,3 +32,4 @@ dependencies:
     - dask
     - plotly
     - pooch
+    - regionmask
