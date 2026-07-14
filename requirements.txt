@@ -31,6 +31,7 @@ optuna>=4.0
 # Utilities
 dask>=2025.0
 pooch>=1.0
+regionmask>=0.13
 
 # Jupyter
 jupyter>=1.0
