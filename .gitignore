@@ -1,5 +1,6 @@
 *.nc
-!Amazon/processed_data/*.nc
+!Amazon/processed_data/GFDL-ESM4/*.nc
+!Amazon/processed_data/TaiESM1/*.nc
 !*.png
 .DS_Store
 !**/.gitkeep
