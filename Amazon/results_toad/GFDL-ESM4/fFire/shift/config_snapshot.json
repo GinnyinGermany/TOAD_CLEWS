@@ -1,0 +1,8 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "fFire",
+    "shift_method": "ASDETECT",
+    "shift_params": {},
+    "shift_direction": "positive",
+    "shift_selection": "local"
+}

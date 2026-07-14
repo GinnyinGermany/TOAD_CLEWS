@@ -17,17 +17,23 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "ASDETECT()",
+                     "shift_method": "FilteredASDETECT",
+                     "shift_params": {
+                         "window_indices": 30,
+                         "min_rel_change": 0.25,
+                         "min_abs_change": 2.0
+                     },
                      "shift_direction": "negative",
-                     "cluster_method": "SpaceTimeDBSCAN",
                      "shift_selection": "local" },
-                "optimize":{
-                    "optimize_objective": "combined_spatial_nonlinearity",
+                "cluster":{
+                    "cluster_method": "SpaceTimeDBSCAN",
+                    "optimize": true,
+                    "optimize_objective": "mean_spatial_autocorrelation",
                     "optimize_params": {
-                    "spatial_eps": [500.0,2000.0],
-                    "temporal_eps": [0.1,0.5],
-                    "min_samples": [10,50] },
-                    "optimize_n_trials": 3000}
+                    "spatial_eps": [300.0,1000.0],
+                    "temporal_eps": [0.2,0.8],
+                    "min_samples": [9,50] },
+                    "optimize_n_trials": 1000}
             }
         },
         "MCWD": {
@@ -47,16 +53,17 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "ASDETECT()",
+                     "shift_method": "ASDETECT",
                      "shift_direction": "negative",
-                     "cluster_method": "SpaceTimeDBSCAN",
                      "shift_selection": "local" },
-                "optimize":{
+                "cluster":{
+                    "cluster_method": "SpaceTimeDBSCAN",
+                    "optimize": true,
                     "optimize_objective": "mean_spatial_autocorrelation",
                     "optimize_params": {
-                    "spatial_eps": [500.0,2000.0],
-                    "temporal_eps": [0.1,0.5],
-                    "min_samples": [10,50] },
+                    "spatial_eps": [300.0,1000.0],
+                    "temporal_eps": [0.2,0.8],
+                    "min_samples": [9,50] },
                     "optimize_n_trials": 1000}
             }
         },
@@ -77,16 +84,17 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "ASDETECT()",
+                     "shift_method": "ASDETECT",
                      "shift_direction": "positive",
-                     "cluster_method": "SpaceTimeDBSCAN",
                      "shift_selection": "local" },
-                "optimize":{
+                "cluster":{
+                    "cluster_method": "SpaceTimeDBSCAN",
+                    "optimize": true,
                     "optimize_objective": "mean_spatial_autocorrelation",
                     "optimize_params": {
-                    "spatial_eps": [500.0,2000.0],
-                    "temporal_eps": [0.1,0.5],
-                    "min_samples": [10,50] },
+                    "spatial_eps": [300.0,1000.0],
+                    "temporal_eps": [0.2,0.8],
+                    "min_samples": [9,50] },
                     "optimize_n_trials": 1000}
             }
         },
@@ -106,16 +114,17 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "ASDETECT()",
+                     "shift_method": "ASDETECT",
                      "shift_direction": "negative",
-                     "cluster_method": "SpaceTimeDBSCAN",
                      "shift_selection": "local" },
-                "optimize":{
+                "cluster":{
+                    "cluster_method": "SpaceTimeDBSCAN",
+                    "optimize": true,
                     "optimize_objective": "mean_spatial_autocorrelation",
                     "optimize_params": {
-                    "spatial_eps": [500.0,2000.0],
-                    "temporal_eps": [0.1,0.5],
-                    "min_samples": [10,50] },
+                    "spatial_eps": [300.0,1000.0],
+                    "temporal_eps": [0.2,0.8],
+                    "min_samples": [9,50] },
                     "optimize_n_trials": 1000}
             }
         }

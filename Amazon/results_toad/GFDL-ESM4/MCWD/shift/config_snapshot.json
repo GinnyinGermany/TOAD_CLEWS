@@ -1,0 +1,8 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "MCWD",
+    "shift_method": "ASDETECT",
+    "shift_params": {},
+    "shift_direction": "negative",
+    "shift_selection": "local"
+}
