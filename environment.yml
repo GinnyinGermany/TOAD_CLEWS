@@ -8,7 +8,7 @@ dependencies:
   - pandas
   - scipy
   - scikit-learn
-  - matplotlib
+  - matplotlib<3.11
   - seaborn
   - xarray
   - netCDF4
