@@ -6,21 +6,18 @@ scikit-learn>=1.0
 
 # Geospatial
 geopandas>=1.0
-cartopy>=0.20
-rasterio>=1.0
 shapely>=2.0
 pyproj>=3.0
 
 # Climate/Data
 netCDF4>=1.0
 xarray>=2025.0
-cfgrib>=0.9
 h5py>=3.0
 intake-esm>=2025.0
 kerchunk>=0.2
 
 # Visualization
-matplotlib>=3.0
+matplotlib>=3.0,<3.11
 seaborn>=0.13
 plotly>=5.0
 
