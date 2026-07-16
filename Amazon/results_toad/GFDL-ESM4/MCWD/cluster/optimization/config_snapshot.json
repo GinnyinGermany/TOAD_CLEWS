@@ -19,10 +19,10 @@
         ]
     },
     "optimize_n_trials": 1000,
-    "best_trial": 74,
+    "best_trial": 41,
     "best_score": 0.8313,
-    "best_spatial_eps": 682.7364493953521,
-    "best_temporal_eps": 0.30330518592271477,
+    "best_spatial_eps": 695.3953427474288,
+    "best_temporal_eps": 0.20337916797438882,
     "best_min_samples": 10,
     "cluster_variable": "MCWD_dts_cluster",
     "n_clusters_from_log": 1,
