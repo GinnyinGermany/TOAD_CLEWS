@@ -41,9 +41,9 @@
                 "rolling_years": 10
             },
             "plot": {
-                "color": "darkred",
+                "color": "goldenrod",
                 "ylabel": "Mean Max Cumulative Water Deficit ($mm$)",
-                "cmap": "OrRd",
+                "cmap": "YlGnBu",
                 "label": "Max Cumulative Water Deficit ($mm$)"
             },
             "toad": {
@@ -141,12 +141,7 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "FilteredASDETECT",
-                     "shift_params": {
-                         "window_indices": 30,
-                         "min_rel_change": 0.0,
-                         "min_abs_change": 0.10
-                     },
+                     "shift_method": "ASDETECT",
                      "shift_direction": "negative",
                      "shift_selection": "local" },
                 "cluster":{

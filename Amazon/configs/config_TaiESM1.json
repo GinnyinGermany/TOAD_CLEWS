@@ -41,9 +41,9 @@
                 "rolling_years": 10
             },
             "plot": {
-                "color": "royalblue",
+                "color": "goldenrod",
                 "ylabel": "Mean Max Cumulative Water Deficit ($mm$)",
-                "cmap": "Blues",
+                "cmap": "YlGnBu",
                 "label": "Max Cumulative Water Deficit ($mm$)"
             },
             "toad": {
