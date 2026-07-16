@@ -5,3 +5,5 @@
 .DS_Store
 !**/.gitkeep
 Amazon/trash/
+__pycache__/
+*.pyc
