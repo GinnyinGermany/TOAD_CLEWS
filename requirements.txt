@@ -30,7 +30,5 @@ dask>=2025.0
 pooch>=1.0
 regionmask>=0.13
 
-# Jupyter
-jupyter>=1.0
-jupyterlab>=4.0
+# Jupyter (kernel support for VS Code's Jupyter extension)
 ipykernel>=6.0
