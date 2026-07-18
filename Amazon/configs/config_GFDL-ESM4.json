@@ -27,7 +27,7 @@
                     "optimize_params": {
                     "spatial_eps": [300.0,1000.0],
                     "temporal_eps": [0.2,0.8],
-                    "min_samples": [9,50] },
+                    "min_samples": [3,50] },
                     "optimize_n_trials": 1000}
             }
         },
@@ -86,11 +86,11 @@
                 "cluster":{
                     "cluster_method": "SpaceTimeDBSCAN",
                     "optimize": true,
-                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_objective": "combined_spatial_nonlinearity",
                     "optimize_params": {
                     "spatial_eps": [300.0,1000.0],
                     "temporal_eps": [0.2,0.8],
-                    "min_samples": [9,50] },
+                    "min_samples": [3,50] },
                     "optimize_n_trials": 1000}
             }
         },

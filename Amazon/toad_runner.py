@@ -248,9 +248,14 @@ def optimize_range_label(optimize_params):
 def make_run_dir(config):
     """Create shift/ and cluster/ directories with new structure.
 
+    For optimization runs, creates timestamped subdirectories to preserve
+    multiple optimization experiments with different params/objectives.
+
     Returns:
         (shift_dir, cluster_dir, shift_run_name, cluster_run_name)
     """
+    from datetime import datetime
+
     model_var_path = RESULTS_DIR / config['model'] / config['variable']
 
     # Shift directory (same for all clustering experiments)
@@ -264,7 +269,9 @@ def make_run_dir(config):
 
     # Cluster directory with parameters or optimization
     if config['optimize']:
-        cluster_subdir = "optimization"
+        # Add timestamp to distinguish multiple optimization runs
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cluster_subdir = f"optimization_{timestamp}"
     else:
         # Build cluster folder name from clustering_params
         spatial_eps = config['clustering_params'].get('spatial_eps', '?')
@@ -394,6 +401,8 @@ def save_shift_results(td, shift_dir, config):
 
 def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimization=None, cluster_variable=None, max_clusters=5):
     """Save clustering results to cluster/{params}/ directory."""
+    from datetime import datetime
+
     cluster_dir = Path(cluster_dir)
 
     if cluster_variable is None:
@@ -405,6 +414,7 @@ def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimiza
         "variable": config["variable"],
         "cluster_method": config["cluster_method_name"],
         "optimize": config["optimize"],
+        "timestamp": datetime.now().isoformat(),
     }
 
     if config["optimize"]:
@@ -509,13 +519,41 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
     selected_cluster_ids = cluster_ids[:max_clusters]
     print("Cluster IDs:", selected_cluster_ids)
 
+    def fix_gwl_unit():
+        """Replace GWL unit from [K] to [°C] in all figure text and axes labels."""
+        fig = plt.gcf()
+
+        # Fix all text objects in the figure
+        for text_obj in fig.findobj():
+            if hasattr(text_obj, 'get_text'):
+                text = text_obj.get_text()
+                if text and "[K]" in text:
+                    text_obj.set_text(text.replace("[K]", "[°C]"))
+
+        # Also fix axes labels directly
+        for ax in fig.get_axes():
+            # Fix xlabel
+            xlabel = ax.get_xlabel()
+            if xlabel and "[K]" in xlabel:
+                ax.set_xlabel(xlabel.replace("[K]", "[°C]"))
+            # Fix ylabel
+            ylabel = ax.get_ylabel()
+            if ylabel and "[K]" in ylabel:
+                ax.set_ylabel(ylabel.replace("[K]", "[°C]"))
+            # Fix title
+            title = ax.get_title()
+            if title and "[K]" in title:
+                ax.set_title(title.replace("[K]", "[°C]"))
+
     # 1. Maximum shift magnitude map
     td.plot.max_shift_map()
+    fix_gwl_unit()
     plt.savefig(plot_dir / "01_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 2. Time of maximum shift map
     td.plot.time_of_max_shift_map()
+    fix_gwl_unit()
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -523,6 +561,7 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
     if len(selected_cluster_ids) > 0:
         for cluster_id in selected_cluster_ids:
             td.plot.timeseries(var=cluster_variable, cluster_ids=[cluster_id])
+            fix_gwl_unit()
             plt.savefig(plot_dir / f"03_timeseries_cluster_{cluster_id}.png", dpi=300, bbox_inches="tight")
             plt.close()
     else:
@@ -530,11 +569,13 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
 
     # 4. Overview - global
     td.plot.overview(var=cluster_variable, map_style={"projection": "global"})
+    fix_gwl_unit()
     plt.savefig(plot_dir / "04_overview_global.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 5. Overview - aggregated
     td.plot.overview(var=cluster_variable, mode="aggregated")
+    fix_gwl_unit()
     plt.savefig(plot_dir / "05_overview_aggregated.png", dpi=300, bbox_inches="tight")
     plt.close()
 
