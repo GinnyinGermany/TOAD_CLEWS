@@ -3,7 +3,7 @@
     "variable": "fFire",
     "cluster_method": "SpaceTimeDBSCAN",
     "optimize": true,
-    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_objective": "combined_spatial_nonlinearity",
     "optimize_params": {
         "spatial_eps": [
             300.0,
@@ -14,16 +14,16 @@
             0.8
         ],
         "min_samples": [
-            9,
+            10,
             50
         ]
     },
     "optimize_n_trials": 1000,
-    "best_trial": 61,
-    "best_score": 0.7893,
-    "best_spatial_eps": 627.8832005952598,
-    "best_temporal_eps": 0.2503105883583748,
-    "best_min_samples": 11,
+    "best_trial": 236,
+    "best_score": 0.8384,
+    "best_spatial_eps": 503.5473111747509,
+    "best_temporal_eps": 0.54262773905161,
+    "best_min_samples": 10,
     "cluster_variable": "fFire_dts_cluster",
     "n_clusters_from_log": 1,
     "n_clustered_points": 57,
