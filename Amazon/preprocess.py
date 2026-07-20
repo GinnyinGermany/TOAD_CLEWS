@@ -965,7 +965,14 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
 
     meta = var_cfg.get("plot", {"cmap": "viridis", "label": f"{target_variable}"})
 
-    target_gwls = [0.0, 1.5, 2.0, 3.0, 4.0, 5.0]
+    # GFDL-ESM4: GWL 0.0 ~ 4.0
+    target_gwls = [0.0, 1.0, 1.5, 2.0, 3.0, 4.0]
+
+    # For other models, uncomment below and adjust GWL range accordingly
+    # gwl_min = float(data_array["GWL"].min())
+    # gwl_max = float(data_array["GWL"].max())
+    # target_gwls = [gwl_min + (gwl_max - gwl_min) * i / 5 for i in range(6)]
+
     v_min = float(data_array.min(skipna=True))
     v_max = float(data_array.max(skipna=True))
 
