@@ -584,7 +584,7 @@ class GWLCalculator:
         gwl = gmt_1pct_smoothed - gmt_preindustrial
 
         gwl.name = "GWL"
-        gwl.attrs["units"] = "K"
+        gwl.attrs["units"] = "°C"
         gwl.attrs["baseline"] = (
             "Mean GMT over the complete piControl simulation"
         )

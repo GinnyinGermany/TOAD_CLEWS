@@ -168,6 +168,13 @@ DEFAULT_OPTIMIZE_OBJECTIVE = "mean_spatial_autocorrelation"
 DEFAULT_OPTIMIZE_DIRECTION = "maximize"
 DEFAULT_OPTIMIZE_N_TRIALS = 1000
 
+# Matches toad.utils.DEFAULT_SHIFT_THRESHOLD -- the minimum shift magnitude
+# required for a point to be used in clustering / counted as a transition in
+# time_of_max_shift_map. Kept here so both are driven by the same JSON value
+# ("toad.shift.shift_threshold") instead of silently using TOAD's library
+# default independently in each call site.
+DEFAULT_SHIFT_THRESHOLD = 0.5
+
 RESULTS_DIR = Path(os.path.join(TOAD_RUNNER_DIR, "results_toad"))
 
 
@@ -371,10 +378,12 @@ def save_shift_results(td, shift_dir, config):
     shift_metadata = {
         "model": config["model"],
         "variable": config["variable"],
+        "rolling_years": config["rolling_years"],
         "shift_method": config["shift_method_name"],
         "shift_params": config["shift_params"],
         "shift_direction": config["shift_direction"],
         "shift_selection": config["shift_selection"],
+        "shift_threshold": config["shift_threshold"],
     }
 
     with open(shift_dir / "config_snapshot.json", "w") as f:
@@ -392,7 +401,7 @@ def save_shift_results(td, shift_dir, config):
     plt.close()
 
     # 2. Time of maximum shift map
-    td.plot.time_of_max_shift_map()
+    td.plot.time_of_max_shift_map(shift_threshold=config["shift_threshold"])
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -412,6 +421,7 @@ def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimiza
     cluster_metadata = {
         "model": config["model"],
         "variable": config["variable"],
+        "rolling_years": config["rolling_years"],
         "cluster_method": config["cluster_method_name"],
         "optimize": config["optimize"],
         "timestamp": datetime.now().isoformat(),
@@ -519,41 +529,13 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
     selected_cluster_ids = cluster_ids[:max_clusters]
     print("Cluster IDs:", selected_cluster_ids)
 
-    def fix_gwl_unit():
-        """Replace GWL unit from [K] to [°C] in all figure text and axes labels."""
-        fig = plt.gcf()
-
-        # Fix all text objects in the figure
-        for text_obj in fig.findobj():
-            if hasattr(text_obj, 'get_text'):
-                text = text_obj.get_text()
-                if text and "[K]" in text:
-                    text_obj.set_text(text.replace("[K]", "[°C]"))
-
-        # Also fix axes labels directly
-        for ax in fig.get_axes():
-            # Fix xlabel
-            xlabel = ax.get_xlabel()
-            if xlabel and "[K]" in xlabel:
-                ax.set_xlabel(xlabel.replace("[K]", "[°C]"))
-            # Fix ylabel
-            ylabel = ax.get_ylabel()
-            if ylabel and "[K]" in ylabel:
-                ax.set_ylabel(ylabel.replace("[K]", "[°C]"))
-            # Fix title
-            title = ax.get_title()
-            if title and "[K]" in title:
-                ax.set_title(title.replace("[K]", "[°C]"))
-
     # 1. Maximum shift magnitude map
     td.plot.max_shift_map()
-    fix_gwl_unit()
     plt.savefig(plot_dir / "01_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 2. Time of maximum shift map
     td.plot.time_of_max_shift_map()
-    fix_gwl_unit()
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -561,7 +543,6 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
     if len(selected_cluster_ids) > 0:
         for cluster_id in selected_cluster_ids:
             td.plot.timeseries(var=cluster_variable, cluster_ids=[cluster_id])
-            fix_gwl_unit()
             plt.savefig(plot_dir / f"03_timeseries_cluster_{cluster_id}.png", dpi=300, bbox_inches="tight")
             plt.close()
     else:
@@ -569,13 +550,11 @@ def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
 
     # 4. Overview - global
     td.plot.overview(var=cluster_variable, map_style={"projection": "global"})
-    fix_gwl_unit()
     plt.savefig(plot_dir / "04_overview_global.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 5. Overview - aggregated
     td.plot.overview(var=cluster_variable, mode="aggregated")
-    fix_gwl_unit()
     plt.savefig(plot_dir / "05_overview_aggregated.png", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -655,6 +634,7 @@ def build_run_config_from_json(
     shift_method_name = shift_cfg.get("shift_method", "ASDETECT")
     shift_params = shift_cfg.get("shift_params", {})
     cluster_method_name = cluster_cfg.get("cluster_method", "SpaceTimeDBSCAN")
+    shift_threshold = shift_cfg.get("shift_threshold", DEFAULT_SHIFT_THRESHOLD)
 
     resolved_direction = optimize_direction or DEFAULT_OPTIMIZE_DIRECTION
 
@@ -668,6 +648,7 @@ def build_run_config_from_json(
         "method": cluster_method_name,
         "shift_direction": shift_cfg.get("shift_direction", "negative"),
         "shift_selection": shift_cfg.get("shift_selection", "local"),
+        "shift_threshold": shift_threshold,
         "optimize": optimize_enabled,
         "optimize_params": optimize_params,
         "optimize_objective": resolved_objective,
@@ -739,6 +720,7 @@ def run_toad_for_variable(
             "method": cluster_method_cls,
             "shift_direction": run_config["shift_direction"],
             "shift_selection": run_config["shift_selection"],
+            "shift_threshold": run_config["shift_threshold"],
             "optimize": run_config["optimize"],
         }
 
@@ -751,8 +733,14 @@ def run_toad_for_variable(
                 "optimize_n_trials": run_config["optimize_n_trials"],
             })
         else:
-            # Single clustering mode: use fixed clustering params
-            cluster_kwargs.update(run_config["clustering_params"])
+            # Single clustering mode: compute_clusters() has no top-level
+            # spatial_eps/temporal_eps/min_samples kwargs -- when method is
+            # passed as a bare class (not optimizing), TOAD instantiates it
+            # with NO arguments internally (`method()`), which would raise
+            # a TypeError for SpaceTimeDBSCAN (spatial_eps/temporal_eps are
+            # required). Fixed params must instead be applied by
+            # pre-instantiating the method here.
+            cluster_kwargs["method"] = cluster_method_cls(**run_config["clustering_params"])
 
         opt_result = td.compute_clusters(**cluster_kwargs)
     finally:
