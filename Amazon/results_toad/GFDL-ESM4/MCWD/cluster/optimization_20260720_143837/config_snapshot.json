@@ -1,0 +1,37 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "MCWD",
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-20T14:38:39.048552",
+    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_params": {
+        "spatial_eps": [
+            500.0,
+            2000.0
+        ],
+        "temporal_eps": [
+            0.1,
+            2.0
+        ],
+        "min_samples": [
+            5,
+            50
+        ]
+    },
+    "optimize_n_trials": 3000,
+    "best_trial": 10,
+    "best_score": 0.8313,
+    "best_spatial_eps": 1644.3653985494998,
+    "best_temporal_eps": 0.14433636790496385,
+    "best_min_samples": 8,
+    "cluster_variable": "MCWD_dts_cluster",
+    "n_clusters_from_log": 1,
+    "n_clustered_points": 18,
+    "noise_percent": 22.2,
+    "n_noise_points": 4,
+    "n_clusters": 1,
+    "cluster_ids": [
+        0
+    ]
+}

@@ -1,8 +1,10 @@
 {
     "model": "GFDL-ESM4",
     "variable": "cVeg",
+    "rolling_years": 5,
     "shift_method": "ASDETECT",
     "shift_params": {},
     "shift_direction": "negative",
-    "shift_selection": "local"
+    "shift_selection": "local",
+    "shift_threshold": 0.5
 }

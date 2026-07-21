@@ -1,0 +1,40 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "treeFrac",
+    "rolling_years": 10,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-21T03:15:04.210720",
+    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_params": {
+        "spatial_eps": [
+            300.0,
+            2000.0
+        ],
+        "temporal_eps": [
+            0.5,
+            2.0
+        ],
+        "min_samples": [
+            10,
+            25
+        ]
+    },
+    "optimize_n_trials": 3000,
+    "best_trial": 2005,
+    "best_score": 0.7976,
+    "best_spatial_eps": 478.1942091221907,
+    "best_temporal_eps": 0.7770786330650528,
+    "best_min_samples": 10,
+    "cluster_variable": "treeFrac_dts_cluster",
+    "n_clusters_from_log": 3,
+    "n_clustered_points": 82,
+    "noise_percent": 40.2,
+    "n_noise_points": 33,
+    "n_clusters": 3,
+    "cluster_ids": [
+        0,
+        1,
+        2
+    ]
+}
