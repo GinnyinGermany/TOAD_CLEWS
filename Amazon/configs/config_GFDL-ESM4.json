@@ -27,7 +27,7 @@
                     "optimize_params": {
                     "spatial_eps": [100, 1500.0],
                     "temporal_eps": [0.1,1.5],
-                    "min_samples": [10,50] },
+                    "min_samples": [15,50] },
                     "optimize_n_trials": 3000}
             }
         },
@@ -109,23 +109,18 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "FilteredASDETECT",
+                     "shift_method": "ASDETECT",
                      "shift_direction": "positive",
-                     "shift_selection": "local",
-                     "shift_params": {
-                        "window_indices": 30,
-                        "min_rel_change": 0.10,
-                        "min_abs_change": 5.0
-                        }
+                     "shift_selection": "local"
                     },
                 "cluster":{
-                                    "cluster_method": "SpaceTimeDBSCAN",
+                    "cluster_method": "SpaceTimeDBSCAN",
                     "optimize": true,
                     "optimize_objective": "mean_spatial_autocorrelation",
                     "optimize_params": {
-                    "spatial_eps": [300.0,2000.0],
-                    "temporal_eps": [0.5,2.0],
-                    "min_samples": [2,25] },
+                    "spatial_eps": [300.0,1000.0],
+                    "temporal_eps": [0.5,1.5],
+                    "min_samples": [5,50] },
                     "optimize_n_trials": 3000}
                 }
         },
