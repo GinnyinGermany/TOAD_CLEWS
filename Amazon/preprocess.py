@@ -4,7 +4,6 @@ import json
 import numpy as np
 import xarray as xr
 import geopandas as gpd
-import regionmask
 import warnings
 import matplotlib.pyplot as plt
 from scipy import ndimage
@@ -95,6 +94,87 @@ def flux_units_to_annual_total_units(original_units):
     return f"{stripped} yr-1" if stripped else original_units
 
 
+def compute_buffered_bbox(shapefile_path, buffer_degrees=5.0, bioma_filter="Amazonía"):
+    """Computes a rectangular (lat_min, lat_max, lon_min, lon_max) bounding box
+    from a biome shapefile's own extent plus a fixed-degree buffer margin,
+    with longitudes converted to the 0-360 convention used by the raw CMIP6
+    files (DataFetcher does no cropping itself; see SimpleProcessor).
+    """
+    boundary = gpd.read_file(shapefile_path)
+    if bioma_filter is not None and "bioma" in boundary.columns:
+        boundary = boundary[boundary["bioma"] == bioma_filter]
+    if boundary.crs is not None and boundary.crs.to_string() != "EPSG:4326":
+        boundary = boundary.to_crs(epsg=4326)
+
+    lon_min, lat_min, lon_max, lat_max = boundary.total_bounds
+    lat_min -= buffer_degrees
+    lat_max += buffer_degrees
+    lon_min -= buffer_degrees
+    lon_max += buffer_degrees
+
+    # Convert from -180/180 (shapefile convention) to 0-360 (raw CMIP6 convention)
+    lon_min_360 = lon_min + 360 if lon_min < 0 else lon_min
+    lon_max_360 = lon_max + 360 if lon_max < 0 else lon_max
+
+    return lat_min, lat_max, lon_min_360, lon_max_360
+
+
+DEFAULT_BIOME_SHAPEFILE_PATH = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
+DEFAULT_BASIN_SHAPEFILE_PATH = os.path.join(
+    PROJECT_ROOT, "data", "AmazonBasinLimits", "amazon_sensulatissimo_gmm_v1.shp"
+)
+
+
+def load_boundary_shapefiles(
+    biome_path=DEFAULT_BIOME_SHAPEFILE_PATH,
+    basin_path=DEFAULT_BASIN_SHAPEFILE_PATH,
+    bioma_filter="Amazonía",
+):
+    """Loads the Amazon biome and basin boundary shapefiles (both EPSG:4326),
+    for use as reference outlines on plots -- NOT for masking/clipping data.
+    """
+    biome = gpd.read_file(biome_path)
+    if bioma_filter is not None and "bioma" in biome.columns:
+        biome = biome[biome["bioma"] == bioma_filter]
+    if biome.crs is not None and biome.crs.to_string() != "EPSG:4326":
+        biome = biome.to_crs(epsg=4326)
+
+    basin = gpd.read_file(basin_path)
+    if basin.crs is not None and basin.crs.to_string() != "EPSG:4326":
+        basin = basin.to_crs(epsg=4326)
+
+    return biome, basin
+
+
+def draw_boundary_overlays(ax, lon_is_0_360, biome_gdf=None, basin_gdf=None, transform=None):
+    """Draws the Amazon biome (solid black) and basin (dashed gray) outlines
+    on a matplotlib Axes as reference lines only (no data masking).
+
+    Args:
+        ax: matplotlib (or cartopy GeoAxes) Axes to draw on.
+        lon_is_0_360: True if the plotted data uses 0-360 longitude
+            convention (raw CMIP6 files do); shifts the -180/180 shapefile
+            geometries to match before plotting.
+        biome_gdf, basin_gdf: pre-loaded GeoDataFrames (EPSG:4326). If either
+            is None, loads the default shapefiles via load_boundary_shapefiles().
+        transform: optional cartopy CRS (e.g. ccrs.PlateCarree()) to pass
+            through to GeoDataFrame.plot(). Required when ax is a cartopy
+            GeoAxes (TOAD's own map()/overview() plots default to one),
+            otherwise the overlay geometry is misaligned with the map.
+    """
+    if biome_gdf is None or basin_gdf is None:
+        default_biome, default_basin = load_boundary_shapefiles()
+        biome_gdf = biome_gdf if biome_gdf is not None else default_biome
+        basin_gdf = basin_gdf if basin_gdf is not None else default_basin
+
+    biome_plot = biome_gdf.translate(xoff=360) if lon_is_0_360 else biome_gdf
+    basin_plot = basin_gdf.translate(xoff=360) if lon_is_0_360 else basin_gdf
+
+    plot_kwargs = {} if transform is None else {"transform": transform}
+    basin_plot.plot(ax=ax, facecolor="none", edgecolor="dimgray", linewidth=1.2, linestyle="--", **plot_kwargs)
+    biome_plot.plot(ax=ax, facecolor="none", edgecolor="black", linewidth=1.5, **plot_kwargs)
+
+
 # ==========================================
 # Phase 1: Configuration Loader
 # ==========================================
@@ -138,13 +218,26 @@ class PipelineConfig:
         # Hardcoding built-in paths
         self.base_path = os.path.join(PROJECT_ROOT, "CMIP6 data")
         self.shapefile_path = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
+        self.basin_shapefile_path = os.path.join(
+            PROJECT_ROOT, "data", "AmazonBasinLimits", "amazon_sensulatissimo_gmm_v1.shp"
+        )
 
-
-        # Default spatial bounding box for Amazon biome
-        self.lat_min = -20
-        self.lat_max = 10
-        self.lon_min = 280
-        self.lon_max = 320
+        # Spatial bounding box: the Amazonía biome polygon's own bounding box,
+        # plus a fixed-degree buffer margin, rather than a hand-picked box or
+        # a hard mask to the irregular biome polygon. Clipping to the jagged
+        # biome polygon (previously done in SpatialMasker) removes real
+        # spatial neighbors right at the boundary, which artificially lowers
+        # local point-density there and fragments density-based clustering
+        # (SpaceTimeDBSCAN) near the edges. A rectangular box (with margin)
+        # keeps every boundary grid cell's true neighbors in the data, while
+        # the biome/basin shapes are still drawn as reference outlines on
+        # plots (see plot_spatial_maps_from_nc / toad_runner overlays).
+        (
+            self.lat_min,
+            self.lat_max,
+            self.lon_min,
+            self.lon_max,
+        ) = compute_buffered_bbox(self.shapefile_path, buffer_degrees=5.0)
 
     def get_dict(self):
         """Returns the configuration as a dictionary."""
@@ -153,6 +246,7 @@ class PipelineConfig:
             "target_variable": self.target_variable,
             "base_path": self.base_path,
             "shapefile_path": self.shapefile_path,
+            "basin_shapefile_path": self.basin_shapefile_path,
             "lat_min": self.lat_min,
             "lat_max": self.lat_max,
             "lon_min": self.lon_min,
@@ -602,36 +696,6 @@ class GWLCalculator:
         return gwl
 
 
-# ==========================================
-# Phase 4: Spatial Masker
-# ==========================================
-class SpatialMasker:
-    """Applies the Amazon basin shapefile mask."""
-    def __init__(self, config):
-        self.shapefile_path = config["shapefile_path"]
-
-    def apply_mask(self, data_array):
-        amazon_boundary = gpd.read_file(self.shapefile_path)
-
-        # Filter to Amazon biome only (bioma == "Amazonía")
-        amazon_boundary = amazon_boundary[amazon_boundary['bioma'] == 'Amazonía']
-
-        if amazon_boundary.crs is not None and amazon_boundary.crs.to_string() != "EPSG:4326":
-            amazon_boundary = amazon_boundary.to_crs(epsg=4326)
-        amazon_single_basin = amazon_boundary.unary_union
-
-        lon_original = data_array["lon"]
-        lon_shifted = data_array["lon"].where(data_array["lon"] <= 180, data_array["lon"] - 360)
-        da_shifted = data_array.assign_coords(lon=lon_shifted)
-
-        basin_region = regionmask.Regions([amazon_single_basin])
-        mask = basin_region.mask(da_shifted["lon"], da_shifted["lat"], wrap_lon=False)
-
-        masked_da_shifted = da_shifted.where(mask == 0)
-        masked_da = masked_da_shifted.assign_coords(lon=lon_original)
-
-        return masked_da
-
 
 # ==========================================
 # Phase 5: TOAD Formatter & Exporter
@@ -711,9 +775,6 @@ def generate_nc(model_name, target_variable, rolling_years=None, config_path=DEF
         datasets["tas_pi"],
     )
 
-    masker = SpatialMasker(config)
-    masked_target_da = masker.apply_mask(target_da)
-
     print("Target time size:", target_da.sizes.get("time", 0))
     print("GWL time size:", gwl_da.sizes.get("time", 0))
 
@@ -732,7 +793,7 @@ def generate_nc(model_name, target_variable, rolling_years=None, config_path=DEF
 
     exporter = TOADExporter(config)
     output_nc_path = exporter.export(
-        masked_target_da,
+        target_da,
         gwl_da,
         datasets["attrs_raw"],
         rolling_years=rolling_years,
@@ -976,20 +1037,8 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
     v_min = float(data_array.min(skipna=True))
     v_max = float(data_array.max(skipna=True))
 
-    # Built-in shapefile path (using PROJECT_ROOT for dynamic path resolution)
-    shapefile_path = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
-    amazon_boundary = gpd.read_file(shapefile_path)
-
-    # Filter to Amazon biome only (bioma == "Amazonía")
-    amazon_boundary = amazon_boundary[amazon_boundary['bioma'] == 'Amazonía']
-
-    if amazon_boundary.crs is not None and amazon_boundary.crs.to_string() != "EPSG:4326":
-        amazon_boundary = amazon_boundary.to_crs(epsg=4326)
-
-    if data_array["lon"].max() > 180:
-        amazon_boundary_plot = amazon_boundary.translate(xoff=360)
-    else:
-        amazon_boundary_plot = amazon_boundary
+    lon_is_0_360 = bool(data_array["lon"].max() > 180)
+    biome_gdf, basin_gdf = load_boundary_shapefiles()
 
     fig, axes = plt.subplots(1, 6, figsize=(24, 4.5), sharex=True, sharey=True)
 
@@ -1007,7 +1056,7 @@ def plot_spatial_maps_from_nc(model_name, target_variable, rolling_years=None, c
             shading="auto",
         )
 
-        amazon_boundary_plot.plot(ax=ax, facecolor="none", edgecolor="black", linewidth=1.5)
+        draw_boundary_overlays(ax, lon_is_0_360, biome_gdf=biome_gdf, basin_gdf=basin_gdf)
         ax.set_title(f"GWL: {target}°C\n(Actual: {actual_gwl:.2f}°C)", fontsize=11)
         ax.set_xlabel("Longitude [°E]", fontsize=9)
 
