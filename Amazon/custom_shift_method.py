@@ -1,7 +1,19 @@
+"""
+custom_shift_method.py
+
+Project-specific shift-detection method: FilteredASDETECT.
+
+Wraps TOAD's ASDETECT (purely statistical, 3-MAD gradient detection) with a
+second-tier physical/ecological magnitude filter (minimum absolute and
+relative change over a window around each candidate shift). Used for
+slowly-varying vegetation state variables (cVeg, grassFrac, treeFrac) whose
+low natural variability makes ASDETECT alone prone to flagging physically
+negligible fluctuations as shifts.
+"""
+
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
-import numpy as np
 from toad.shifts import ShiftsMethod
 from toad.shifts import ASDETECT
 
@@ -21,7 +33,7 @@ class FilteredASDETECT(ShiftsMethod):
         self.segmentation = segmentation
 
         # Parameters for the 2nd-tier filtering
-        # Assuming annual data, window_indices corresponds to years
+        # Assuming annual data, window_indices corresponds to simulation model years
         self.window_indices = window_indices
         self.min_rel_change = min_rel_change
         self.min_abs_change = min_abs_change

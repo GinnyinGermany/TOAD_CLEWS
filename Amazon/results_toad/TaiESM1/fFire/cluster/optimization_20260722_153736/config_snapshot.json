@@ -1,0 +1,42 @@
+{
+    "model": "TaiESM1",
+    "variable": "fFire",
+    "rolling_years": 10,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-22T15:37:37.182642",
+    "optimize_objective": "combined_spatial_nonlinearity",
+    "optimize_params": {
+        "spatial_eps": [
+            100.0,
+            600.0
+        ],
+        "temporal_eps": [
+            0.2,
+            0.5
+        ],
+        "min_samples": [
+            5,
+            30
+        ]
+    },
+    "optimize_n_trials": 1000,
+    "best_trial": 179,
+    "best_score": 0.8823,
+    "best_spatial_eps": 473.1167307012202,
+    "best_temporal_eps": 0.38708245434602095,
+    "best_min_samples": 8,
+    "cluster_variable": "fFire_dts_cluster",
+    "n_clusters_from_log": 5,
+    "n_clustered_points": 186,
+    "noise_percent": 58.1,
+    "n_noise_points": 108,
+    "n_clusters": 5,
+    "cluster_ids": [
+        0,
+        1,
+        2,
+        3,
+        4
+    ]
+}

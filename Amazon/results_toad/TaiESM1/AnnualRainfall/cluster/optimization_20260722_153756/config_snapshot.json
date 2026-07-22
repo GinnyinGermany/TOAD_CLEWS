@@ -1,0 +1,39 @@
+{
+    "model": "TaiESM1",
+    "variable": "AnnualRainfall",
+    "rolling_years": 10,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-22T15:37:57.572269",
+    "optimize_objective": "mean_spatial_autocorrelation",
+    "optimize_params": {
+        "spatial_eps": [
+            300.0,
+            1000.0
+        ],
+        "temporal_eps": [
+            0.2,
+            1.0
+        ],
+        "min_samples": [
+            5,
+            30
+        ]
+    },
+    "optimize_n_trials": 1000,
+    "best_trial": 58,
+    "best_score": 0.9895,
+    "best_spatial_eps": 361.8132405932499,
+    "best_temporal_eps": 0.40080217026841375,
+    "best_min_samples": 5,
+    "cluster_variable": "AnnualRainfall_dts_cluster",
+    "n_clusters_from_log": 2,
+    "n_clustered_points": 69,
+    "noise_percent": 75.4,
+    "n_noise_points": 52,
+    "n_clusters": 2,
+    "cluster_ids": [
+        0,
+        1
+    ]
+}

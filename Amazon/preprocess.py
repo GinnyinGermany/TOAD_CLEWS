@@ -1,3 +1,17 @@
+"""
+preprocess.py
+
+Raw CMIP6 -> TOAD-ready pipeline: fetches per-model NetCDF files, applies
+per-variable preprocessing (unit conversion, temporal aggregation, custom
+formulas like MCWD), computes the GWL time axis, crops to the Amazon
+processing domain, and exports a single GWL-indexed .nc file per
+(model, variable). Also provides the trend/spatial-map plotting functions
+used directly by run_pipeline.py and the analysis notebooks.
+
+All per-variable behaviour is driven by the JSON config (see
+DEFAULT_CONFIG_PATH / load_pipeline_json) rather than being hardcoded here.
+"""
+
 import glob
 import os
 import json
@@ -94,6 +108,9 @@ def flux_units_to_annual_total_units(original_units):
     return f"{stripped} yr-1" if stripped else original_units
 
 
+# ==========================================
+# Phase 0b: Boundary Shapefiles & Domain Bbox
+# ==========================================
 def compute_buffered_bbox(shapefile_path, buffer_degrees=5.0, bioma_filter="Amazonía"):
     """Computes a rectangular (lat_min, lat_max, lon_min, lon_max) bounding box
     from a biome shapefile's own extent plus a fixed-degree buffer margin,
@@ -245,16 +262,12 @@ class PipelineConfig:
             PROJECT_ROOT, "data", "AmazonBasinLimits", "amazon_sensulatissimo_gmm_v1.shp"
         )
 
-        # Spatial bounding box: the Amazonía biome polygon's own bounding box,
-        # plus a fixed-degree buffer margin, rather than a hand-picked box or
-        # a hard mask to the irregular biome polygon. Clipping to the jagged
-        # biome polygon (previously done in SpatialMasker) removes real
-        # spatial neighbors right at the boundary, which artificially lowers
-        # local point-density there and fragments density-based clustering
-        # (SpaceTimeDBSCAN) near the edges. A rectangular box (with margin)
-        # keeps every boundary grid cell's true neighbors in the data, while
-        # the biome/basin shapes are still drawn as reference outlines on
-        # plots (see plot_spatial_maps_from_nc / toad_runner overlays).
+        # Spatial domain: the Amazonía biome polygon's bounding box plus a
+        # fixed-degree buffer, rather than a hard mask to the polygon itself.
+        # This keeps every boundary cell's true spatial neighbors in the
+        # data so SpaceTimeDBSCAN clustering isn't fragmented at the edges.
+        # Biome/basin shapes are still drawn as reference outlines on plots
+        # (see plot_spatial_maps_from_nc / toad_runner overlays).
         (
             self.lat_min,
             self.lat_max,
@@ -392,17 +405,11 @@ class BaseProcessor:
 
 
 class SimpleProcessor(BaseProcessor):
-    """Generic processor for "simple"-type variables.
-
-    Behaviour is entirely driven by config["preprocessing"]:
+    """Generic processor for "simple"-type variables (e.g. cVeg, fFire,
+    AnnualRainfall). Behaviour is entirely driven by config["preprocessing"]:
       - time_frequency: resample frequency (e.g. "1YS")
       - aggregation: "mean" or "sum"
       - unit_conversion: "none" or "flux_to_annual_total"
-
-    This single class replaces the old hardcoded DirectVariableProcessor and
-    AnnualRainfallProcessor -- both cVeg-style mean variables and fFire /
-    AnnualRainfall-style flux-integrated-sum variables are handled the same
-    way, just with different config values.
     """
 
     AGGREGATIONS = {"mean": "mean", "sum": "sum"}
@@ -649,6 +656,9 @@ class ProcessorFactory:
         )
 
 
+# ==========================================
+# Phase 4: GWL Calculator
+# ==========================================
 class GWLCalculator:
     """Calculate GWL following the Terpstra et al. approach."""
 
@@ -738,8 +748,8 @@ class TOADExporter:
         self.model = config["model_name"]
         self.variable = config["target_variable"]
 
-    def export(self, masked_da, gwl_da, raw_attrs, rolling_years=None):
-        merged_ds = xr.merge([masked_da, gwl_da], join="inner")
+    def export(self, variable_da, gwl_da, raw_attrs, rolling_years=None):
+        merged_ds = xr.merge([variable_da, gwl_da], join="inner")
         final_ds = merged_ds.set_coords("GWL").swap_dims({"time": "GWL"}).sortby("GWL")
 
         final_ds.attrs = raw_attrs
@@ -825,7 +835,7 @@ def generate_nc(model_name, target_variable, rolling_years=None, config_path=DEF
     return output_nc_path
 
 # ==========================================
-# Function 2: Caculating centered rolling mean
+# Function 2: Calculating centered rolling mean
 # ==========================================
 
 def apply_centered_rolling_mean(data_array, rolling_years):

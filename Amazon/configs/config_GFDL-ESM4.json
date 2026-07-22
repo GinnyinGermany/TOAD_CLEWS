@@ -59,7 +59,7 @@
                 "cluster":{
                     "cluster_method": "SpaceTimeDBSCAN",
                     "optimize": true,
-                    "optimize_objective": "mean_spatial_autocorrelation",
+                    "optimize_objective": "combined_spatial_nonlinearity",
                     "optimize_params": {
                     "spatial_eps": [500.0,2000.0],
                     "temporal_eps": [0.1,2.0],
@@ -94,7 +94,7 @@
                     "optimize_params": {
                     "spatial_eps": [100.0, 600.0],
                     "temporal_eps": [0.2,0.5],
-                    "min_samples": [4,50] },
+                    "min_samples": [3,50] },
                     "optimize_n_trials": 3000}
             }
         },

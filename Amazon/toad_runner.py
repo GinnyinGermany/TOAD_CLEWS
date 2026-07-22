@@ -5,38 +5,22 @@ Wraps the TOAD shift-detection / clustering / plotting stage into reusable
 functions so it can be driven programmatically for any (model, variable)
 pair produced by preprocess.py.
 
-Design note (method B): the JSON config is the single source of truth for
-TOAD's shift/optimize settings, and this module re-reads it directly via
-preprocess.load_pipeline_json() / preprocess.get_variable_config() -- the
-same JSON file used at preprocessing time. The processed .nc file produced
-by preprocess.py does NOT carry any "toad" settings in its attrs (see
-TOADExporter in preprocess.py); it is purely the masked, GWL-indexed data.
-This means:
-  - Re-tuning shift_direction/shift_selection/optimize_params only requires
-    editing the JSON and re-running the TOAD stage -- no need to regenerate
-    the .nc file.
-  - There is exactly one place (the JSON) where TOAD-run parameters live,
-    so there's no attrs<->JSON round-trip/type-conversion layer to maintain
-    and no risk of the two silently drifting apart.
+The JSON config is the single source of truth for TOAD's shift/cluster
+settings: this module re-reads it directly via preprocess.load_pipeline_json()
+/ preprocess.get_variable_config(), the same file used at preprocessing time.
+The processed .nc file itself carries no "toad" settings, so re-tuning
+shift/cluster parameters only requires editing the JSON and re-running the
+TOAD stage -- no need to regenerate the .nc file.
 
-Schema (current): config.json's "toad" block per variable now names both
-algorithms explicitly under "shift":
-  - "shift_method"   (e.g. "ASDETECT()")       -> used by td.compute_shifts
-  - "cluster_method" (e.g. "SpaceTimeDBSCAN")  -> used by td.compute_clusters
-Both are resolved dynamically via SHIFT_METHOD_REGISTRY /
-CLUSTER_METHOD_REGISTRY below instead of being hardcoded, so adding a new
-algorithm only means registering it here once.
+Each variable's "toad" block names its algorithms explicitly:
+  - shift.shift_method     (e.g. "ASDETECT", "FilteredASDETECT") -> td.compute_shifts
+  - cluster.cluster_method (e.g. "SpaceTimeDBSCAN")               -> td.compute_clusters
+Both are resolved via SHIFT_METHOD_REGISTRY / CLUSTER_METHOD_REGISTRY below;
+adding a new algorithm only means registering it there.
 
-"toad.optimize" now carries "optimize_objective" directly, and
-"optimize_n_trials" is read from config.json too (build_run_config_from_json
-checks both toad.optimize.optimize_n_trials and a toad-level sibling key, to
-be robust to either placement). optimize_direction ("maximize"/"minimize")
-is still not part of the schema, so it stays a module-level default
-(DEFAULT_OPTIMIZE_DIRECTION) -- add it to the JSON and thread it through
-build_run_config_from_json() if per-variable control is ever needed.
-
-The old "optimize.optimize" boolean on/off toggle no longer exists in the
-schema; optimization is treated as always-on.
+cluster.optimize toggles between an Optuna parameter search
+(optimize_params / optimize_objective / optimize_n_trials) and fixed
+clustering_params.
 """
 
 import ast
@@ -55,15 +39,15 @@ import xarray as xr
 
 import preprocess
 
-# ------------------------------------------------------------------
+# ==========================================
 # Script location and project root (for dynamic path resolution)
-# ------------------------------------------------------------------
+# ==========================================
 TOAD_RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(TOAD_RUNNER_DIR)
 
-# ------------------------------------------------------------------
+# ==========================================
 # TOAD package import
-# ------------------------------------------------------------------
+# ==========================================
 def _ensure_toad_on_path():
     """Add the toad-main directory (sibling of this project's parent dir) to
     sys.path, matching the original notebook's path setup."""
@@ -81,18 +65,15 @@ from toad.clustering.methods.space_time_dbscan import SpaceTimeDBSCAN  # noqa: E
 import custom_shift_method  # noqa: E402
 
 
-# ------------------------------------------------------------------
-# Method registries: config.json now names the shift-detection algorithm
-# and the clustering algorithm explicitly (toad.shift.shift_method /
-# toad.shift.cluster_method) instead of hardcoding ASDETECT in this module.
-# Add an entry here whenever a new TOAD method needs to be reachable from
-# the JSON.
+# ==========================================
+# Method registries: maps config.json's shift_method / cluster_method
+# strings to TOAD classes. Add an entry here whenever a new algorithm
+# needs to be reachable from the JSON.
 #
-# Note the asymmetry (carried over from the original notebook): TOAD wants
-# an *instance* for compute_shifts(method=...) but the bare *class* for
-# compute_clusters(method=...). resolve_shift_method() instantiates;
-# resolve_cluster_method() does not.
-# ------------------------------------------------------------------
+# Note the asymmetry: TOAD wants an *instance* for compute_shifts(method=...)
+# but the bare *class* for compute_clusters(method=...). resolve_shift_method()
+# instantiates; resolve_cluster_method() does not.
+# ==========================================
 SHIFT_METHOD_REGISTRY = {
     "ASDETECT": ASDETECT,
 }
@@ -156,16 +137,13 @@ def resolve_cluster_method(name):
     return method_cls
 
 
-# ------------------------------------------------------------------
-# Defaults for keys config.json still does not carry.
-# config.json's "toad.optimize" block now DOES carry optimize_objective,
-# and "toad" now carries optimize_n_trials -- see build_run_config_from_json.
-# optimize_direction ("maximize"/"minimize") is still not in the schema, so
-# it stays a module-level default. Likewise, the old boolean toggle
-# "optimize.optimize" (on/off) was dropped from the schema entirely; we
-# treat optimization as always-on to match the current workflow.
-# ------------------------------------------------------------------
-DEFAULT_OPTIMIZE_OBJECTIVE = "mean_spatial_autocorrelation"
+# ==========================================
+# Module-level defaults. optimize_direction is not part of the JSON schema
+# (always "maximize" in practice), so it stays a constant here rather than
+# a per-variable config key. Optimization is always-on when cluster.optimize
+# is true; clustering_params is used directly when it's false.
+# ==========================================
+DEFAULT_OPTIMIZE_OBJECTIVE = "combined_spatial_nonlinearity"
 DEFAULT_OPTIMIZE_DIRECTION = "maximize"
 DEFAULT_OPTIMIZE_N_TRIALS = 1000
 
@@ -179,10 +157,10 @@ DEFAULT_SHIFT_THRESHOLD = 0.5
 RESULTS_DIR = Path(os.path.join(TOAD_RUNNER_DIR, "results_toad"))
 
 
-# ------------------------------------------------------------------
+# ==========================================
 # Log parsing helpers (optimizer prints its best trial to the logger;
 # TOAD does not return it directly, so we capture + regex-parse it)
-# ------------------------------------------------------------------
+# ==========================================
 def remove_ansi_codes(text):
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
@@ -229,31 +207,10 @@ def parse_best_optimization_from_log(log_text):
     return result
 
 
-# ------------------------------------------------------------------
-# Run-directory / labeling helpers
-# ------------------------------------------------------------------
-def smoothing_label(rolling_years):
-    if rolling_years is None or rolling_years <= 1:
-        return "annual"
-    return f"smooth{rolling_years}yr"
-
-
-def safe_float_label(value):
-    return str(value).replace(".", "p")
-
-
-def optimize_range_label(optimize_params):
-    sp = optimize_params["spatial_eps"]
-    te = optimize_params["temporal_eps"]
-    ms = optimize_params["min_samples"]
-    return (
-        f"sp{int(sp[0])}-{int(sp[1])}_"
-        f"t{safe_float_label(te[0])}-{safe_float_label(te[1])}_"
-        f"ms{int(ms[0])}-{int(ms[1])}"
-    )
-
-
-def make_run_dir(config):
+# ==========================================
+# Run-directory helpers
+# ==========================================
+def make_run_dir(run_config):
     """Create shift/ and cluster/ directories with new structure.
 
     For optimization runs, creates timestamped subdirectories to preserve
@@ -264,32 +221,32 @@ def make_run_dir(config):
     """
     from datetime import datetime
 
-    model_var_path = RESULTS_DIR / config['model'] / config['variable']
+    model_var_path = RESULTS_DIR / run_config['model'] / run_config['variable']
 
     # Shift directory (same for all clustering experiments)
     shift_run_name = (
-        f"{config['model']}/"
-        f"{config['variable']}/"
+        f"{run_config['model']}/"
+        f"{run_config['variable']}/"
         f"shift"
     )
     shift_dir = model_var_path / "shift"
     shift_dir.mkdir(parents=True, exist_ok=True)
 
     # Cluster directory with parameters or optimization
-    if config['optimize']:
+    if run_config['optimize']:
         # Add timestamp to distinguish multiple optimization runs
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         cluster_subdir = f"optimization_{timestamp}"
     else:
         # Build cluster folder name from clustering_params
-        spatial_eps = config['clustering_params'].get('spatial_eps', '?')
-        temporal_eps = config['clustering_params'].get('temporal_eps', '?')
-        min_samples = config['clustering_params'].get('min_samples', '?')
+        spatial_eps = run_config['clustering_params'].get('spatial_eps', '?')
+        temporal_eps = run_config['clustering_params'].get('temporal_eps', '?')
+        min_samples = run_config['clustering_params'].get('min_samples', '?')
         cluster_subdir = f"eps{spatial_eps}_temp{temporal_eps}_min{min_samples}"
 
     cluster_run_name = (
-        f"{config['model']}/"
-        f"{config['variable']}/"
+        f"{run_config['model']}/"
+        f"{run_config['variable']}/"
         f"cluster/{cluster_subdir}"
     )
     cluster_dir = model_var_path / "cluster" / cluster_subdir
@@ -311,80 +268,23 @@ def flatten_dict(d, prefix=""):
     return out
 
 
-# ------------------------------------------------------------------
-# Saving cluster results
-# ------------------------------------------------------------------
-def save_optimized_toad_run_light(td, config, opt_result=None, best_optimization=None):
-    run_dir, run_name = make_run_dir(config)
-
-    metadata = config.copy()
-    metadata["run_name"] = run_name
-
-    if best_optimization is not None:
-        metadata.update(best_optimization)
-    if opt_result is not None:
-        metadata["opt_result_repr"] = repr(opt_result)
-
-    try:
-        cluster_variable = metadata.get("cluster_variable", config["variable"])
-        cluster_ids = [
-            int(cid) for cid in td.get_cluster_ids(cluster_variable) if int(cid) != -1
-        ]
-    except Exception as e:
-        cluster_ids = []
-        metadata["cluster_id_error"] = str(e)
-
-    metadata["n_clusters"] = len(cluster_ids)
-    metadata["cluster_ids"] = cluster_ids
-
-    with open(run_dir / "metadata.json", "w") as f:
-        json.dump(metadata, f, indent=4, default=str)
-
-    rows = []
-    if len(cluster_ids) == 0:
-        rows.append({**metadata, "cluster_id": None})
-    else:
-        for cluster_id in cluster_ids:
-            row = {**metadata, "cluster_id": cluster_id}
-            try:
-                time_stats = td.stats(cluster_variable).time.all_stats(cluster_id)
-                row.update(flatten_dict(time_stats, prefix="time"))
-            except Exception as e:
-                row["time_stats_error"] = str(e)
-            try:
-                general_stats = td.stats(cluster_variable).general.all_stats(cluster_id)
-                row.update(flatten_dict(general_stats, prefix="general"))
-            except Exception as e:
-                row["general_stats_error"] = str(e)
-            rows.append(row)
-
-    stats_df = pd.DataFrame(rows)
-    stats_df.to_csv(run_dir / "cluster_stats.csv", index=False)
-
-    print(f"[Saved] {run_dir}")
-    print(f"[Saved] {run_dir / 'metadata.json'}")
-    print(f"[Saved] {run_dir / 'cluster_stats.csv'}")
-
-    return run_dir, stats_df
-
-
-# ------------------------------------------------------------------
+# ==========================================
 # Saving shift and cluster results (separated)
-# ------------------------------------------------------------------
-def save_shift_results(td, shift_dir, config):
+# ==========================================
+def save_shift_results(td, shift_dir, run_config):
     """Save shift detection results to shift/ directory."""
     shift_dir = Path(shift_dir)
 
     # Create metadata for shift
     shift_metadata = {
-        "model": config["model"],
-        "variable": config["variable"],
-        "rolling_years": config["rolling_years"],
-        "shift_method": config["shift_method_name"],
-        "shift_params": config["shift_params"],
-        "shift_direction": config["shift_direction"],
-        "shift_selection": config["shift_selection"],
-        "shift_threshold": config["shift_threshold"],
+        "model": run_config["model"],
+        "variable": run_config["variable"],
+        "rolling_years": run_config["rolling_years"],
+        "shift_method": run_config["shift_method_name"],
+        "shift_params": run_config["shift_params"],
+        "shift_direction": run_config["shift_direction"],
+        "shift_selection": run_config["shift_selection"],
+        "shift_threshold": run_config["shift_threshold"],
     }
 
     with open(shift_dir / "config_snapshot.json", "w") as f:
@@ -403,7 +303,7 @@ def save_shift_results(td, shift_dir, config):
     plt.close()
 
     # 2. Time of maximum shift map
-    fig, ax = td.plot.time_of_max_shift_map(shift_threshold=config["shift_threshold"])
+    fig, ax = td.plot.time_of_max_shift_map(shift_threshold=run_config["shift_threshold"])
     preprocess.draw_boundary_overlays(ax, lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
@@ -411,33 +311,33 @@ def save_shift_results(td, shift_dir, config):
     print(f"[Saved plots] {plot_dir}")
 
 
-def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimization=None, cluster_variable=None, max_clusters=5):
+def save_cluster_results(td, cluster_dir, run_config, opt_result=None, best_optimization=None, cluster_variable=None, max_clusters=5):
     """Save clustering results to cluster/{params}/ directory."""
     from datetime import datetime
 
     cluster_dir = Path(cluster_dir)
 
     if cluster_variable is None:
-        cluster_variable = config["variable"]
+        cluster_variable = run_config["variable"]
 
     # Create metadata for cluster
     cluster_metadata = {
-        "model": config["model"],
-        "variable": config["variable"],
-        "rolling_years": config["rolling_years"],
-        "cluster_method": config["cluster_method_name"],
-        "optimize": config["optimize"],
+        "model": run_config["model"],
+        "variable": run_config["variable"],
+        "rolling_years": run_config["rolling_years"],
+        "cluster_method": run_config["cluster_method_name"],
+        "optimize": run_config["optimize"],
         "timestamp": datetime.now().isoformat(),
     }
 
-    if config["optimize"]:
+    if run_config["optimize"]:
         cluster_metadata.update({
-            "optimize_objective": config["optimize_objective"],
-            "optimize_params": config["optimize_params"],
-            "optimize_n_trials": config["optimize_n_trials"],
+            "optimize_objective": run_config["optimize_objective"],
+            "optimize_params": run_config["optimize_params"],
+            "optimize_n_trials": run_config["optimize_n_trials"],
         })
     else:
-        cluster_metadata["clustering_params"] = config["clustering_params"]
+        cluster_metadata["clustering_params"] = run_config["clustering_params"]
 
     if best_optimization is not None:
         cluster_metadata.update(best_optimization)
@@ -519,9 +419,9 @@ def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimiza
     return stats_df
 
 
-# ------------------------------------------------------------------
+# ==========================================
 # JSON config -> RUN_CONFIG
-# ------------------------------------------------------------------
+# ==========================================
 def build_run_config_from_json(
     config_path,
     model,
@@ -532,28 +432,20 @@ def build_run_config_from_json(
     optimize_n_trials=None,
 ):
     """Build the RUN_CONFIG dict by reading the variable's "toad" block
-    (shift + optimize) straight from the pipeline JSON -- the same file
-    preprocess.py used to generate the .nc file. Nothing is read from the
-    .nc file itself; the JSON is the single source of truth for these
-    settings.
+    (shift + cluster) straight from the pipeline JSON -- the same file
+    preprocess.py used to generate the .nc file. The JSON is the single
+    source of truth for these settings; nothing is read from the .nc file.
 
     optimize_objective / optimize_direction / optimize_n_trials passed here
-    are treated as explicit overrides; when left as None (the default),
-    the value is taken from the JSON, falling back to the module-level
+    are treated as explicit overrides; when left as None (the default), the
+    value is taken from the JSON, falling back to the module-level
     DEFAULT_* constants only if the JSON is also missing it.
 
-    Schema notes:
-      - toad.shift now carries "shift_method" (e.g. "ASDETECT()") and
-        "cluster_method" (e.g. "SpaceTimeDBSCAN") as separate keys, resolved
-        below via resolve_shift_method()/resolve_cluster_method().
-      - toad.optimize now carries "optimize_objective" directly.
-      - "optimize_n_trials" is read from toad.optimize first, falling back
-        to a sibling key directly under "toad" -- config.json currently
-        places it as a sibling of "shift"/"optimize" rather than nested
-        inside "optimize", so both locations are checked to be robust to
-        either layout.
-      - The old "optimize.optimize" boolean on/off toggle no longer exists
-        in the schema; optimization is treated as always-on.
+    shift_method/cluster_method are resolved via resolve_shift_method() /
+    resolve_cluster_method(). optimize_n_trials is read from
+    cluster.optimize_n_trials first, falling back to a sibling key directly
+    under "toad" (both locations are checked since config.json is not
+    fully consistent about nesting it).
     """
     pipeline_json = preprocess.load_pipeline_json(config_path)
     var_cfg = preprocess.get_variable_config(pipeline_json, variable)
@@ -615,9 +507,9 @@ def build_run_config_from_json(
     }
 
 
-# ------------------------------------------------------------------
+# ==========================================
 # Public entry point
-# ------------------------------------------------------------------
+# ==========================================
 def run_toad_for_variable(
     nc_path,
     model,
@@ -715,14 +607,14 @@ def run_toad_for_variable(
     save_shift_results(
         td=td,
         shift_dir=shift_dir,
-        config=run_config,
+        run_config=run_config,
     )
 
     # Step 5: Save clustering results and plots
     stats_df = save_cluster_results(
         td=td,
         cluster_dir=cluster_dir,
-        config=run_config,
+        run_config=run_config,
         opt_result=opt_result,
         best_optimization=best_optimization,
         cluster_variable=best_optimization.get("cluster_variable", variable),

@@ -1,8 +1,10 @@
 {
     "model": "TaiESM1",
     "variable": "MCWD",
+    "rolling_years": 10,
     "shift_method": "ASDETECT",
     "shift_params": {},
     "shift_direction": "negative",
-    "shift_selection": "local"
+    "shift_selection": "local",
+    "shift_threshold": 0.5
 }
