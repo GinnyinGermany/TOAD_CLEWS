@@ -1,0 +1,23 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "grassFrac",
+    "rolling_years": 1,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": false,
+    "timestamp": "2026-07-22T01:42:32.817495",
+    "clustering_params": {
+        "spatial_eps": 500,
+        "temporal_eps": 1.0,
+        "min_samples": 14
+    },
+    "cluster_variable": "grassFrac_dts_cluster",
+    "n_clusters_from_log": 2,
+    "n_clustered_points": 125,
+    "noise_percent": 68.8,
+    "n_noise_points": 86,
+    "n_clusters": 2,
+    "cluster_ids": [
+        0,
+        1
+    ]
+}

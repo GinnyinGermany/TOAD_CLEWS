@@ -1,0 +1,2 @@
+model,variable,rolling_years,cluster_method,optimize,timestamp,clustering_params,cluster_variable,n_clusters_from_log,n_clustered_points,noise_percent,n_noise_points,n_clusters,cluster_ids,cluster_id
+GFDL-ESM4,treeFrac,1,SpaceTimeDBSCAN,False,2026-07-22T01:00:44.061352,"{'spatial_eps': 300, 'temporal_eps': 0.8, 'min_samples': 10}",treeFrac_dts_cluster,0,272,100.0,272,0,[],
