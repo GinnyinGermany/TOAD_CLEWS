@@ -8,27 +8,20 @@ scikit-learn>=1.0
 geopandas>=1.0
 shapely>=2.0
 pyproj>=3.0
+cartopy>=0.22
 
 # Climate/Data
 netCDF4>=1.0
 xarray>=2025.0
 h5py>=3.0
-intake-esm>=2025.0
-kerchunk>=0.2
+dask>=2025.0
 
 # Visualization
 matplotlib>=3.0,<3.11
-seaborn>=0.13
-plotly>=5.0
 
 # TOAD
 tipmip-toad==1.0.8
 optuna>=4.0
-
-# Utilities
-dask>=2025.0
-pooch>=1.0
-regionmask>=0.13
 
 # Jupyter (kernel support for VS Code's Jupyter extension)
 ipykernel>=6.0
