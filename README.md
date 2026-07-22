@@ -1,14 +1,11 @@
-# TOAD_CLEWS
+# When, Where, and How Much Does the Amazon Rainforest Change Under Global Warming? : Applying TOAD
 
 TOAD-based abrupt-shift detection and clustering pipeline for the Amazon
 rainforest, driven by CMIP6 `1pctCO2` model output.
 
-This project was created for the *Earth System Science and the Anthropocene*
-lecture (Master's program: Climate, Earth, Water, Sustainability -- CLEWS)
-at the University of Potsdam, taught by Johan Rockström and Jonathan Donges.
-This analysis project was supervised by Jakob Harteg of the Earth Resilience
-Science Unit ([ERSU](https://www.pik-potsdam.de/en/institute/futurelabs-science-units/ersu)),
-Potsdam Institute for Climate Impact Research. Thank you, Jakob!
+This project was developed as part of the Earth System Science and the Anthropocene course in the Master's programme Climate, Earth, Water, Sustainability (CLEWS) at the University of Potsdam, taught by Johan Rockström and Jonathan Donges.
+
+The project was supervised by Jakob Harteg from the Earth Resilience Science Unit (ERSU) at the Potsdam Institute for Climate Impact Research (PIK). Many thanks to Jakob for his guidance and support throughout the project.
 
 This pipeline is built on [TOAD](https://github.com/tipmip-methods/toad):
 
