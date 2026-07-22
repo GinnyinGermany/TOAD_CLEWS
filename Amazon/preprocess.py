@@ -136,9 +136,9 @@ def compute_buffered_bbox(shapefile_path, buffer_degrees=5.0, bioma_filter="Amaz
     return lat_min, lat_max, lon_min_360, lon_max_360
 
 
-DEFAULT_BIOME_SHAPEFILE_PATH = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
+DEFAULT_BIOME_SHAPEFILE_PATH = os.path.join(PROJECT_ROOT, "data", "biome", "Biomas.shp")
 DEFAULT_BASIN_SHAPEFILE_PATH = os.path.join(
-    PROJECT_ROOT, "data", "AmazonBasinLimits", "amazon_sensulatissimo_gmm_v1.shp"
+    PROJECT_ROOT, "data", "basin", "amazon_sensulatissimo_gmm_v1.shp"
 )
 
 
@@ -255,12 +255,10 @@ class PipelineConfig:
         self.plot_config = self.variable_config.get("plot", {})
         self.toad_config = self.variable_config.get("toad", {})
 
-        # Hardcoding built-in paths
-        self.base_path = os.path.join(PROJECT_ROOT, "CMIP6 data")
-        self.shapefile_path = os.path.join(PROJECT_ROOT, "data", "Biome", "Biomas.shp")
-        self.basin_shapefile_path = os.path.join(
-            PROJECT_ROOT, "data", "AmazonBasinLimits", "amazon_sensulatissimo_gmm_v1.shp"
-        )
+        # Built-in paths
+        self.base_path = os.path.join(PROJECT_ROOT, "data", "cmip6")
+        self.shapefile_path = DEFAULT_BIOME_SHAPEFILE_PATH
+        self.basin_shapefile_path = DEFAULT_BASIN_SHAPEFILE_PATH
 
         # Spatial domain: the Amazonía biome polygon's bounding box plus a
         # fixed-degree buffer, rather than a hard mask to the polygon itself.

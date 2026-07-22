@@ -7,3 +7,12 @@
 Amazon/trash/
 __pycache__/
 *.pyc
+venv/
+.claude/
+
+# Third-party boundary shapefiles: not redistributed (see data/biome/README.md
+# and data/basin/README.md for download instructions and license terms).
+data/biome/*
+!data/biome/README.md
+data/basin/*
+!data/basin/README.md
