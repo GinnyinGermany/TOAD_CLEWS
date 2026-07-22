@@ -3,6 +3,8 @@
 TOAD-based abrupt-shift detection and clustering pipeline for the Amazon
 rainforest, driven by CMIP6 `1pctCO2` model output.
 
+**Authors**: Wonjin Kim, Bianca Pinto, Sekar Ayu Kinasih
+
 This project was developed as part of the Earth System Science and the Anthropocene course in the Master's programme Climate, Earth, Water, Sustainability (CLEWS) at the University of Potsdam, taught by Johan Rockström and Jonathan Donges.
 
 The project was supervised by Jakob Harteg from the Earth Resilience Science Unit (ERSU) at the Potsdam Institute for Climate Impact Research (PIK). Many thanks to Jakob for his guidance and support throughout the project.
