@@ -1,0 +1,38 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "cVeg",
+    "rolling_years": 5,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-21T19:07:53.451753",
+    "optimize_objective": "combined_spatial_nonlinearity",
+    "optimize_params": {
+        "spatial_eps": [
+            100,
+            1500.0
+        ],
+        "temporal_eps": [
+            0.1,
+            1.5
+        ],
+        "min_samples": [
+            15,
+            50
+        ]
+    },
+    "optimize_n_trials": 3000,
+    "best_trial": 287,
+    "best_score": 0.877,
+    "best_spatial_eps": 907,
+    "best_temporal_eps": 0.10064835517636903,
+    "best_min_samples": 17,
+    "cluster_variable": "cVeg_dts_cluster",
+    "n_clusters_from_log": 1,
+    "n_clustered_points": 148,
+    "noise_percent": 79.1,
+    "n_noise_points": 117,
+    "n_clusters": 1,
+    "cluster_ids": [
+        0
+    ]
+}

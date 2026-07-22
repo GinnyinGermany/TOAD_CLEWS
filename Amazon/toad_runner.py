@@ -48,6 +48,7 @@ import re
 import sys
 from pathlib import Path
 
+import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
@@ -396,12 +397,14 @@ def save_shift_results(td, shift_dir, config):
     plot_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Maximum shift magnitude map
-    td.plot.max_shift_map()
+    fig, ax = td.plot.max_shift_map()
+    preprocess.draw_boundary_overlays(ax, lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "01_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 2. Time of maximum shift map
-    td.plot.time_of_max_shift_map(shift_threshold=config["shift_threshold"])
+    fig, ax = td.plot.time_of_max_shift_map(shift_threshold=config["shift_threshold"])
+    preprocess.draw_boundary_overlays(ax, lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
 
@@ -500,66 +503,20 @@ def save_cluster_results(td, cluster_dir, config, opt_result=None, best_optimiza
         print("[Warning] No valid cluster IDs found for timeseries plot.")
 
     # 4. Overview - global
-    td.plot.overview(var=cluster_variable, map_style={"projection": "global"})
+    fig, result = td.plot.overview(var=cluster_variable, map_style={"projection": "global"})
+    preprocess.draw_boundary_overlays(result["map"], lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "04_overview_global.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     # 5. Overview - aggregated
-    td.plot.overview(var=cluster_variable, mode="aggregated")
+    fig, result = td.plot.overview(var=cluster_variable, mode="aggregated")
+    preprocess.draw_boundary_overlays(result["map"], lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "05_overview_aggregated.png", dpi=300, bbox_inches="tight")
     plt.close()
 
     print(f"[Saved plots] {plot_dir}")
 
     return stats_df
-
-
-# ------------------------------------------------------------------
-# Saving plots (legacy)
-# ------------------------------------------------------------------
-def save_toad_plots(td, run_dir, cluster_variable, max_clusters=5):
-    plot_dir = Path(run_dir) / "plots"
-    plot_dir.mkdir(parents=True, exist_ok=True)
-
-    print("Using cluster variable:", cluster_variable)
-
-    cluster_ids = [
-        int(cid) for cid in td.get_cluster_ids(cluster_variable) if int(cid) != -1
-    ]
-    selected_cluster_ids = cluster_ids[:max_clusters]
-    print("Cluster IDs:", selected_cluster_ids)
-
-    # 1. Maximum shift magnitude map
-    td.plot.max_shift_map()
-    plt.savefig(plot_dir / "01_max_shift_map.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 2. Time of maximum shift map
-    td.plot.time_of_max_shift_map()
-    plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 3. Timeseries - one plot per cluster
-    if len(selected_cluster_ids) > 0:
-        for cluster_id in selected_cluster_ids:
-            td.plot.timeseries(var=cluster_variable, cluster_ids=[cluster_id])
-            plt.savefig(plot_dir / f"03_timeseries_cluster_{cluster_id}.png", dpi=300, bbox_inches="tight")
-            plt.close()
-    else:
-        print("[Warning] No valid cluster IDs found for timeseries plot.")
-
-    # 4. Overview - global
-    td.plot.overview(var=cluster_variable, map_style={"projection": "global"})
-    plt.savefig(plot_dir / "04_overview_global.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    # 5. Overview - aggregated
-    td.plot.overview(var=cluster_variable, mode="aggregated")
-    plt.savefig(plot_dir / "05_overview_aggregated.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-    print(f"[Saved plots] {plot_dir}")
-    return plot_dir
 
 
 # ------------------------------------------------------------------

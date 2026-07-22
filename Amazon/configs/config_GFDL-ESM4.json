@@ -7,7 +7,7 @@
                 "time_frequency": "1YS",
                 "aggregation": "mean",
                 "unit_conversion": "none",
-                "rolling_years": 5
+                "rolling_years": 1
             },
             "plot": {
                 "color": "forestgreen",
@@ -17,18 +17,23 @@
             },
             "toad": {
                 "shift":{
-                     "shift_method": "ASDETECT",
+                     "shift_method": "FilteredASDETECT",
                      "shift_direction": "negative",
-                     "shift_selection": "local" },
+                     "shift_selection": "local",
+                     "shift_params": {
+                        "window_indices": 15,
+                        "min_rel_change": 0.25,
+                        "min_abs_change": 2.0
+                        } },
                 "cluster":{
                     "cluster_method": "SpaceTimeDBSCAN",
                     "optimize": true,
                     "optimize_objective": "combined_spatial_nonlinearity",
                     "optimize_params": {
-                    "spatial_eps": [100, 1500.0],
-                    "temporal_eps": [0.1,1.5],
-                    "min_samples": [10,50] },
-                    "optimize_n_trials": 3000}
+                    "spatial_eps": [100, 300.0],
+                    "temporal_eps": [0.01,1.0],
+                    "min_samples": [2,10] },
+                    "optimize_n_trials": 1000}
             }
         },
         "MCWD": {
@@ -87,9 +92,9 @@
                     "optimize": true,
                     "optimize_objective": "combined_spatial_nonlinearity",
                     "optimize_params": {
-                    "spatial_eps": [300.0,1000.0],
-                    "temporal_eps": [0.2,0.8],
-                    "min_samples": [3,50] },
+                    "spatial_eps": [100.0, 600.0],
+                    "temporal_eps": [0.2,0.5],
+                    "min_samples": [4,50] },
                     "optimize_n_trials": 3000}
             }
         },
@@ -99,7 +104,7 @@
                 "time_frequency": "1YS",
                 "aggregation": "mean",
                 "unit_conversion": "none",
-                "rolling_years": 5
+                "rolling_years": 1
             },
             "plot": {
                 "color": "limegreen",
@@ -114,19 +119,16 @@
                      "shift_selection": "local",
                      "shift_params": {
                         "window_indices": 30,
-                        "min_rel_change": 0.10,
-                        "min_abs_change": 5.0
-                        }
-                    },
+                        "min_rel_change": 0.25,
+                        "min_abs_change": 1.0
+                        } },
                 "cluster":{
-                                    "cluster_method": "SpaceTimeDBSCAN",
-                    "optimize": true,
-                    "optimize_objective": "mean_spatial_autocorrelation",
-                    "optimize_params": {
-                    "spatial_eps": [300.0,2000.0],
-                    "temporal_eps": [0.5,2.0],
-                    "min_samples": [2,25] },
-                    "optimize_n_trials": 3000}
+                    "cluster_method": "SpaceTimeDBSCAN",
+                    "optimize": false,
+                    "clustering_params": {
+                        "spatial_eps": 500,
+                        "temporal_eps": 0.8,
+                        "min_samples": 12}}
                 }
         },
         "treeFrac": {
@@ -135,7 +137,7 @@
                 "time_frequency": "1YS",
                 "aggregation": "mean",
                 "unit_conversion": "none",
-                "rolling_years": 10
+                "rolling_years": 1
             },
             "plot": {
                 "color": "darkgreen",
@@ -150,49 +152,16 @@
                      "shift_selection": "local",
                      "shift_params": {
                         "window_indices": 30,
-                        "min_rel_change": 0.10,
-                        "min_abs_change": 5.0
-                        }
-                    },
+                        "min_rel_change": 0.25,
+                        "min_abs_change": 1.0
+                        } },
                 "cluster":{
                     "cluster_method": "SpaceTimeDBSCAN",
-                    "optimize": true,
-                    "optimize_objective": "mean_spatial_autocorrelation",
-                    "optimize_params": {
-                    "spatial_eps": [300.0,2000.0],
-                    "temporal_eps": [1.5,4.0],
-                    "min_samples": [20,25] },
-                    "optimize_n_trials": 3000}
-            }
-        },
-        "AnnualRainfall": {
-            "preprocessing": {
-                "type": "simple",
-                "time_frequency": "1YS",
-                "aggregation": "sum",
-                "unit_conversion": "flux_to_annual_total",
-                "rolling_years": 10
-            },
-            "plot": {
-                "color": "royalblue",
-                "ylabel": "Mean Annual Rainfall ($mm$)",
-                "cmap": "Blues",
-                "label": "Annual Rainfall ($mm$)"
-            },
-            "toad": {
-                "shift":{
-                     "shift_method": "ASDETECT",
-                     "shift_direction": "negative",
-                     "shift_selection": "local" },
-                "cluster":{
-                    "cluster_method": "SpaceTimeDBSCAN",
-                    "optimize": true,
-                    "optimize_objective": "mean_spatial_autocorrelation",
-                    "optimize_params": {
-                    "spatial_eps": [300.0,1000.0],
-                    "temporal_eps": [0.2,0.8],
-                    "min_samples": [9,50] },
-                    "optimize_n_trials": 3000}
+                    "optimize": false,
+                    "clustering_params": {
+                        "spatial_eps": 500,
+                        "temporal_eps": 0.8,
+                        "min_samples": 12}}
             }
         }
     }
