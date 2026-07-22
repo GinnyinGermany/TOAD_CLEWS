@@ -1,0 +1,24 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "treeFrac",
+    "rolling_years": 1,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": false,
+    "timestamp": "2026-07-22T01:39:19.272933",
+    "clustering_params": {
+        "spatial_eps": 500,
+        "temporal_eps": 1.0,
+        "min_samples": 12
+    },
+    "cluster_variable": "treeFrac_dts_cluster",
+    "n_clusters_from_log": 3,
+    "n_clustered_points": 138,
+    "noise_percent": 63.0,
+    "n_noise_points": 87,
+    "n_clusters": 3,
+    "cluster_ids": [
+        0,
+        1,
+        2
+    ]
+}

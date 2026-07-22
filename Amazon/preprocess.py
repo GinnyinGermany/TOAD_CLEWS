@@ -146,6 +146,29 @@ def load_boundary_shapefiles(
     return biome, basin
 
 
+def biome_cell_mask(lat_values, lon_values, biome_gdf=None):
+    """Boolean (lat, lon) mask of grid cells whose center falls inside the
+    Amazon biome polygon. Longitudes may be in 0-360 or -180/180 convention.
+
+    Unlike draw_boundary_overlays(), this IS meant for masking/averaging data
+    -- use it for summary statistics (e.g. area-averaged trend plots) that
+    should represent the Amazon biome specifically, not the wider rectangular
+    processing domain.
+    """
+    from shapely.geometry import Point
+
+    if biome_gdf is None:
+        biome_gdf, _ = load_boundary_shapefiles()
+    biome_union = biome_gdf.union_all()
+
+    mask = np.zeros((len(lat_values), len(lon_values)), dtype=bool)
+    for i, lat in enumerate(lat_values):
+        for j, lon in enumerate(lon_values):
+            lon180 = lon - 360 if lon > 180 else lon
+            mask[i, j] = biome_union.contains(Point(lon180, lat))
+    return mask
+
+
 def draw_boundary_overlays(ax, lon_is_0_360, biome_gdf=None, basin_gdf=None, transform=None):
     """Draws the Amazon biome (solid black) and basin (dashed gray) outlines
     on a matplotlib Axes as reference lines only (no data masking).
@@ -876,8 +899,12 @@ def plot_trend_from_nc(model_name, target_variable, rolling_years=None, config_p
     print(f"\n--- Plotting data from {file_path} ---")
     ds = xr.open_dataset(file_path)
 
-    # Calculate Spatial Mean using lon and lat
-    spatial_mean = ds[target_variable].mean(dim=["lon", "lat"], skipna=True)
+    # Calculate Spatial Mean over the Amazon biome only (the processing
+    # domain is a wider rectangular buffer around the biome; averaging over
+    # it directly would dilute the Amazon signal with non-Amazon cells).
+    mask_2d = biome_cell_mask(ds["lat"].values, ds["lon"].values)
+    mask_da = xr.DataArray(mask_2d, dims=["lat", "lon"], coords={"lat": ds["lat"], "lon": ds["lon"]})
+    spatial_mean = ds[target_variable].where(mask_da).mean(dim=["lon", "lat"], skipna=True)
 
     meta = var_cfg.get("plot", {"color": "blue", "ylabel": f"Mean {target_variable}"})
     gwl_vals = spatial_mean["GWL"].values

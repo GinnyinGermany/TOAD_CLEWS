@@ -1,0 +1,41 @@
+{
+    "model": "GFDL-ESM4",
+    "variable": "grassFrac",
+    "rolling_years": 1,
+    "cluster_method": "SpaceTimeDBSCAN",
+    "optimize": true,
+    "timestamp": "2026-07-22T00:46:17.964064",
+    "optimize_objective": "combined_spatial_nonlinearity",
+    "optimize_params": {
+        "spatial_eps": [
+            300.0,
+            500.0
+        ],
+        "temporal_eps": [
+            0.3,
+            1.5
+        ],
+        "min_samples": [
+            5,
+            10
+        ]
+    },
+    "optimize_n_trials": 3000,
+    "best_trial": 695,
+    "best_score": 0.9198,
+    "best_spatial_eps": 429.6396022651832,
+    "best_temporal_eps": 0.30096318048137366,
+    "best_min_samples": 6,
+    "cluster_variable": "grassFrac_dts_cluster",
+    "n_clusters_from_log": 4,
+    "n_clustered_points": 140,
+    "noise_percent": 73.6,
+    "n_noise_points": 103,
+    "n_clusters": 4,
+    "cluster_ids": [
+        0,
+        1,
+        2,
+        3
+    ]
+}
