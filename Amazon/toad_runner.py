@@ -29,40 +29,23 @@ import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 
 import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import pandas as pd
 import xarray as xr
+from toad import TOAD
+from toad.shifts import ASDETECT
+from toad.clustering.methods.space_time_dbscan import SpaceTimeDBSCAN
 
 import preprocess
+import custom_shift_method
 
 # ==========================================
-# Script location and project root (for dynamic path resolution)
+# Script location (for results directory resolution)
 # ==========================================
 TOAD_RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(TOAD_RUNNER_DIR)
-
-# ==========================================
-# TOAD package import
-# ==========================================
-def _ensure_toad_on_path():
-    """Add the toad-main directory (sibling of this project's parent dir) to
-    sys.path, matching the original notebook's path setup."""
-    toad_main_path = os.path.join(PROJECT_ROOT, "toad-main")
-    if toad_main_path not in sys.path:
-        sys.path.append(toad_main_path)
-
-
-_ensure_toad_on_path()
-
-from toad import TOAD  # noqa: E402
-from toad.shifts import ASDETECT  # noqa: E402
-from toad.clustering.methods.space_time_dbscan import SpaceTimeDBSCAN  # noqa: E402
-
-import custom_shift_method  # noqa: E402
 
 
 # ==========================================
