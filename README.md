@@ -50,6 +50,8 @@ TOAD_CLEWS/
 │   ├── toad_runner.py        # TOAD orchestration
 │   └── run_pipeline.py       # Main orchestrator
 ├── data/                     # Third-party input data (not redistributed, see below)
+├── requirements.txt          # Python dependencies
+├── LICENSE                   # MIT License (code)
 └── README.md                 # This file
 ```
 
