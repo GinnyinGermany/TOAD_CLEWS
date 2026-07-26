@@ -286,7 +286,10 @@ def save_shift_results(td, shift_dir, run_config):
     plt.close()
 
     # 2. Time of maximum shift map
-    fig, ax = td.plot.time_of_max_shift_map(shift_threshold=run_config["shift_threshold"])
+    fig, ax = td.plot.time_of_max_shift_map(
+        shift_threshold=run_config["shift_threshold"],
+        shift_direction=run_config["shift_direction"],
+    )
     preprocess.draw_boundary_overlays(ax, lon_is_0_360=True, transform=ccrs.PlateCarree())
     plt.savefig(plot_dir / "02_time_of_max_shift_map.png", dpi=300, bbox_inches="tight")
     plt.close()
